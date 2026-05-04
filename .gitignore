@@ -1,0 +1,10 @@
+.DS_Store
+/.idea
+/.worktrees
+/docs
+/bin
+/dist
+/letts
+/dugdale
+*.test
+*.out

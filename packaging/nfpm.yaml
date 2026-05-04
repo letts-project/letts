@@ -1,0 +1,31 @@
+name: letts
+arch: amd64
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: Evgeny Zinoviev
+description: |
+  letts — distributed task queue (dugdale daemon and letts CLI). Successor to jobd.
+homepage: https://github.com/evgeny/letts
+license: MIT
+contents:
+  - src: dist/dugdale-linux-amd64
+    dst: /usr/bin/dugdale
+    file_info:
+      mode: 0755
+  - src: dist/letts-linux-amd64
+    dst: /usr/bin/letts
+    file_info:
+      mode: 0755
+  - src: packaging/systemd/dugdale.service
+    dst: /lib/systemd/system/dugdale.service
+  - src: packaging/systemd/dugdale@.service
+    dst: /lib/systemd/system/dugdale@.service
+  - src: packaging/examples/dugdale.yaml
+    dst: /etc/letts/dugdale/default.yaml.example
+    type: config
+scripts:
+  postinstall: packaging/scripts/postinstall.sh
+  preremove:   packaging/scripts/preremove.sh
+  postremove:  packaging/scripts/postremove.sh

@@ -1,0 +1,63 @@
+listen:   0.0.0.0:7180
+data_dir: /var/lib/letts
+
+network:
+  behind_tls_proxy: true              # 0.0.0.0 listen requires TLS proxy or insecure_plain_http
+  insecure_plain_http: false
+  trusted_proxies: []
+  use_x_forwarded_for: false
+
+auth:
+  tokens: ["disp-Xx7K3y..."]
+
+admin:
+  tokens: ["adm-Yz9L4m..."]
+
+log:
+  level:  info
+  format: json
+  output: stderr
+
+cleanup:
+  success_ttl:        24h
+  failed_ttl:         7d
+  staging_ttl:        1h
+  downloaded_grace:   1h
+  lost_cleanup_grace: 10m
+  sweep_interval:     5m
+
+limits:
+  max_output_buffer:     16MiB
+  max_events_buffer:     1MiB
+  max_event_line_size:   1MiB
+  max_return_value_size: 768KiB
+  max_fail_message_size: 64KiB
+  max_fail_details_size: 256KiB
+  max_dispatch_body_size: 2MiB
+  max_mission_input_size: 1MiB
+  max_exec_body_size:     1MiB
+  max_apply_body_size:    1MiB
+  max_progress_rate:     50
+  progress_buffer_size:  256KiB
+  max_output_files_per_mission: 32
+  max_output_file_size:   0
+  max_staging_upload_size: 0
+  upload_idle_timeout:   30s
+  max_incomplete_staging_uploads: 128
+  max_incomplete_staging_bytes: 0
+  max_queue_per_lane:    0
+  max_queue_total:       0
+  max_data_dir_size:     0
+  default_kill_grace:    5s
+  reader_post_exit_grace: 5s
+  cache_size:            -16000
+
+exec:
+  enabled: false
+  tokens: []
+  allow_shell: false
+  max_script_size:        256KiB
+  max_inputs_per_exec:    32
+  max_outputs_per_exec:   32
+  exec_success_ttl:       1h
+  exec_failed_ttl:        24h

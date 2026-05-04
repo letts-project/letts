@@ -1,0 +1,31 @@
+# Dev-only dugdale config. Run with --insecure-config-permissions because
+# the file isn't 0600 and lives next to the source tree.
+listen: 127.0.0.1:7180
+data_dir: /tmp/letts-dev/data
+
+log:
+  level: info
+  format: text
+  output: stderr
+
+auth:
+  tokens:
+    - dev-disp-token
+
+admin:
+  tokens:
+    - dev-admin-token
+
+cleanup:
+  success_ttl: 1h
+  failed_ttl: 24h
+  staging_ttl: 1h
+  sweep_interval: 30s
+
+limits:
+  max_dispatch_body_size: 1MiB
+  max_apply_body_size: 1MiB
+  max_staging_upload_size: 100MiB
+  max_event_line_size: 1MiB
+  default_kill_grace: 2s
+  reader_post_exit_grace: 2s

@@ -1,0 +1,5 @@
+# Composer install creates a symlinked vendor/ — never commit.
+/vendor/
+
+# _setup.sh writes binaries, runtime state, generated configs, logs here.
+/.runtime/

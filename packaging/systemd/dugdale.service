@@ -1,0 +1,41 @@
+[Unit]
+Description=letts dugdale daemon (default instance)
+Documentation=https://git.eswyft.org/letts/letts
+
+# Default instance. For additional instances on the same host use the
+# dugdale@<name>.service template (config at /etc/letts/dugdale/<name>.yaml).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=letts
+Group=letts
+ExecStartPre=/usr/bin/dugdale --check-config --config=/etc/letts/dugdale/default.yaml
+ExecStart=/usr/bin/dugdale --config=/etc/letts/dugdale/default.yaml
+Restart=on-failure
+RestartSec=2
+# Graceful drain: SIGTERM goes to the dugdale leader only; running mission
+# children keep going until they finish. systemd never force-kills on timeout.
+TimeoutStopSec=infinity
+KillMode=process
+KillSignal=SIGTERM
+SendSIGKILL=no
+Delegate=yes
+# data_dir = /var/lib/letts/default (must match the config). /var/lib/letts is a
+# shared container: every instance gets its own /var/lib/letts/<name> subdir, so
+# no daemon ever owns the parent directly. systemd creates and owns these under
+# User=/Group=.
+StateDirectory=letts/default
+StateDirectoryMode=0750
+
+# Optional hardening — DISABLED by default: missions run arbitrary application
+# PHP code, and aggressive sandboxing (ProtectHome/PrivateTmp/etc.) can break it.
+# Enable selectively only after testing your missions:
+#   NoNewPrivileges=true
+#   ProtectSystem=full
+#   ProtectHome=read-only
+#   PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,108 @@
+package cleanup_test
+
+import (
+	"context"
+	"database/sql"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"letts/internal/cleanup"
+	"letts/internal/storage"
+)
+
+func TestVacuumRunOnce(t *testing.T) {
+	db := setupCleanupDB(t)
+	v := &cleanup.Vacuumer{DB: db, Logger: slog.Default()}
+	v.RunOnce(context.Background())
+}
+
+func TestVacuumRunHonorsCtxCancel(t *testing.T) {
+	db := setupCleanupDB(t)
+	v := &cleanup.Vacuumer{DB: db, Logger: slog.Default(), Interval: 10 * time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { v.Run(ctx); close(done) }()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Run didn't return after cancel")
+	}
+}
+
+// TestVacuumRunOnceTruncatesWAL verifies that RunOnce triggers
+// `PRAGMA wal_checkpoint(TRUNCATE)` and the WAL file shrinks to 0 bytes.
+// Without TRUNCATE, the WAL grows until the auto-checkpoint threshold
+// (1000 pages by default) and never reclaims disk.
+func TestVacuumRunOnceTruncatesWAL(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	db, err := storage.Open(dbPath, storage.Options{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(context.Background(), db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	// Insert enough rows to actually grow the WAL beyond the empty header.
+	// We use the missions table since it's already migrated; values are
+	// arbitrary but distinct so SQLite has real work to record.
+	ctx := context.Background()
+	for i := 0; i < 50; i++ {
+		mid := "0192aaaa-0000-7000-8000-" + leftPadHex(int64(i), 12)
+		if err := storage.InsertMission(ctx, db, &storage.Mission{
+			ID:               mid,
+			Kind:             storage.KindMission,
+			Lane:             "normal",
+			MissionName:      "WALFixture",
+			Status:           storage.StatusQueued,
+			Input:            []byte(`{"i":` + leftPadHex(int64(i), 4) + `}`),
+			InputFingerprint: "fp-" + mid,
+			TimeCreatedMs:    time.Now().UnixMilli(),
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+
+	walPath := dbPath + "-wal"
+	preInfo, preErr := os.Stat(walPath)
+	if preErr != nil {
+		t.Fatalf("WAL file missing before RunOnce: %v", preErr)
+	}
+	preSize := preInfo.Size()
+	if preSize == 0 {
+		t.Fatalf("WAL file empty before RunOnce; inserts didn't grow the log")
+	}
+
+	v := &cleanup.Vacuumer{DB: db, Logger: slog.Default()}
+	v.RunOnce(ctx)
+
+	postInfo, err := os.Stat(walPath)
+	if err != nil {
+		t.Fatalf("WAL stat after RunOnce: %v", err)
+	}
+	if postInfo.Size() != 0 {
+		t.Errorf("WAL not truncated: pre=%d post=%d", preSize, postInfo.Size())
+	}
+}
+
+// leftPadHex turns a small int into a fixed-width hex string for fake
+// UUIDv7 construction. Local helper so the test can produce distinct ids
+// without depending on ids.NewUUIDv7 (which is non-deterministic).
+func leftPadHex(n int64, width int) string {
+	hex := []byte("0123456789abcdef")
+	out := make([]byte, width)
+	for i := width - 1; i >= 0; i-- {
+		out[i] = hex[n&0xF]
+		n >>= 4
+	}
+	return string(out)
+}
+
+// silences unused-import warning if the helper above is later moved.
+var _ sql.Result = nil

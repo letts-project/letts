@@ -1,0 +1,21 @@
+# Dev letts.yaml — single dugdale on localhost matching scripts/dev/dugdale.yaml.
+#
+# The mission_dir is a placeholder; apply.sh / dispatch.sh substitute it
+# with the absolute path of scripts/dev/missions (or $MISSION_DIR override)
+# at runtime via sed into a temp file.
+
+auth:
+  token: dev-disp-token
+  admin_token: dev-admin-token
+
+dugdales:
+  - id: local
+    host: 127.0.0.1
+    port: 7180
+    mission_dir: __MISSION_DIR_PLACEHOLDER__
+    runtime:
+      command_template: ["sh", "{mission_path}"]
+      mission_path_template: "{mission}.sh"
+      validate_mission_file: true
+    lanes:
+      default: {concurrency: 2}

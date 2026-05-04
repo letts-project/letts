@@ -1,0 +1,32 @@
+# /etc/letts/dugdale/default.yaml — dugdale daemon config (default instance).
+# Copy this .example to /etc/letts/dugdale/default.yaml, set tokens and listen, chmod 0600.
+# Additional instances: /etc/letts/dugdale/<name>.yaml run by dugdale@<name>.service
+# (each MUST set its own data_dir: /var/lib/letts/<name>).
+# NOTE: dugdale.yaml does NOT expand ${ENV} — values are literal.
+# Lanes / runtime / mission_dir are NOT here: push them via `letts apply`
+# (client-side letts.yaml), not via this file.
+
+listen:   127.0.0.1:7180     # loopback. A non-loopback listen (0.0.0.0/public IP)
+                             # REQUIRES network.behind_tls_proxy: true (firewalled /
+                             # behind a TLS proxy), or insecure_plain_http: true for dev.
+data_dir: /var/lib/letts/default
+
+auth:
+  tokens: ["CHANGE-ME-dispatch"]   # rotate; e.g. `openssl rand -base64 24`
+
+admin:
+  tokens: ["CHANGE-ME-admin"]
+
+log:
+  level:  info               # debug | info | warn | error
+  format: json               # json | text
+  output: stderr             # stderr (→ journald) | stdout | /path/to/file
+
+cleanup:
+  success_ttl:    24h
+  failed_ttl:     7d
+  staging_ttl:    1h
+  sweep_interval: 5m
+
+exec:
+  enabled: false             # opt-in remote exec (RCE); leave off unless needed

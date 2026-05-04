@@ -1,0 +1,4 @@
+listen: 127.0.0.1:7180
+data_dir: /var/lib/letts
+auth:
+  tokens: ["disp-test"]

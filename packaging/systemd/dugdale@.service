@@ -1,0 +1,35 @@
+# Template unit for additional dugdale instances on one host.
+# Enable an instance "foo" with:  systemctl enable --now dugdale@foo
+# It runs:  dugdale --config=/etc/letts/dugdale/foo.yaml
+#
+# Each instance MUST use its own data_dir. The instance config
+# /etc/letts/dugdale/<name>.yaml MUST set:
+#     data_dir:      /var/lib/letts/<name>
+# to match StateDirectory below (systemd creates and owns it).
+# The plain dugdale.service is equivalent to dugdale@default (same default.yaml,
+# same data_dir /var/lib/letts/default) — run only ONE of the two; the data_dir
+# flock makes the second refuse to start.
+[Unit]
+Description=letts dugdale daemon (instance %i)
+Documentation=https://github.com/evgeny/letts
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=letts
+Group=letts
+ExecStartPre=/usr/bin/dugdale --check-config --config=/etc/letts/dugdale/%i.yaml
+ExecStart=/usr/bin/dugdale --config=/etc/letts/dugdale/%i.yaml
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=infinity
+KillMode=process
+KillSignal=SIGTERM
+SendSIGKILL=no
+Delegate=yes
+StateDirectory=letts/%i
+StateDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

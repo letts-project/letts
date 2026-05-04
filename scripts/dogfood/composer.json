@@ -1,0 +1,19 @@
+{
+    "name": "letts/dogfood",
+    "description": "Dogfood scripts validating letts CLI + dugdale + PHP-client end-to-end on a local developer machine.",
+    "type": "project",
+    "require": {
+        "php": "^8.3",
+        "letts/php-client": "@dev"
+    },
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../../../letts-php",
+            "options": {
+                "symlink": true
+            }
+        }
+    ],
+    "minimum-stability": "stable"
+}
