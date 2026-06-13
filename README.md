@@ -218,6 +218,30 @@ The `.deb` is produced from `packaging/nfpm.yaml` and installs:
 - an annotated example config at `/etc/letts/dugdale/default.yaml.example`
 - post-install / pre-remove / post-remove maintainer scripts
 
+### Releasing
+
+Releases are tag-driven. Pushing a `v0.0.N` tag makes a host-mode Gitea Actions
+runner build the `.deb` once and publish it to both the Gitea release page
+(`git.eswyft.org/letts/letts`) and the GitHub release page
+(`github.com/letts-project/letts`). The push-mirror only carries the tag to
+GitHub; the GitHub *release* is created by the CI job.
+
+```sh
+# ... commit your work first ...
+make bump      # VERSION++, commit VERSION, annotated tag v0.0.N (local only)
+make deb       # optional: build the .deb locally to sanity-check
+make release   # push branch + tag to origin -> CI publishes to both
+```
+
+CI prerequisites (one-time): a Gitea Actions runner registered in host mode with
+the `letts-freebsd` label, `bash git go curl jq` installed on that host, and a
+`GH_PAT` repo secret (GitHub fine-grained PAT on `letts-project/letts`,
+Contents: write). See the release pipeline design spec for runner setup.
+
+To publish a release by hand (e.g. before the runner exists), build with
+`make deb`, write a notes file, and run `scripts/build/publish-release.sh`
+for each flavor with the appropriate env (`gitea` / `github`).
+
 ---
 
 ## Quick start

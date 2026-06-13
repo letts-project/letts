@@ -7,7 +7,7 @@ priority: optional
 maintainer: Evgeny Zinoviev
 description: |
   letts — distributed task queue (dugdale daemon and letts CLI). Successor to jobd.
-homepage: https://github.com/evgeny/letts
+homepage: https://git.eswyft.org/letts/letts
 license: MIT
 contents:
   - src: dist/dugdale-linux-amd64

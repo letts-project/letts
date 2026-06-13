@@ -1,4 +1,4 @@
-.PHONY: all build dugdale letts test vet fmt check clean linux deb bump version help
+.PHONY: all build dugdale letts test vet fmt check clean linux deb bump release version help
 
 GO ?= go
 BIN_DIR ?= bin
@@ -33,8 +33,11 @@ linux: ## Cross-compile linux/amd64 binaries into dist/ (no package)
 deb: ## Build linux binaries + package a .deb into dist/
 	./scripts/build/package.sh
 
-bump: ## Increment build number in VERSION and commit it
+bump: ## Increment build number in VERSION, commit and tag it
 	./scripts/build/bump.sh
+
+release: ## Push current branch + version tag to origin (triggers CI release)
+	./scripts/build/release.sh
 
 version: ## Print the current version string (0.0.<N>)
 	@./scripts/build/version.sh

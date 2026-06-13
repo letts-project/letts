@@ -22,6 +22,17 @@ next=$((cur + 1))
 printf '%s\n' "$next" > VERSION
 
 ver="$(scripts/build/version.sh)"
+tag="v${ver}"
+
+# Guard: never clobber an existing release tag. Revert the VERSION bump so the
+# working tree is left exactly as we found it.
+if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+  git checkout -q -- VERSION
+  echo "bump: tag ${tag} already exists; aborting (VERSION reverted)" >&2
+  exit 1
+fi
+
 git commit -q -m "chore: bump build to ${next} (${ver})" -- VERSION
-echo "bumped build ${cur} -> ${next}   version=${ver}"
+git tag -a "${tag}" -m "release ${ver}"
+echo "bumped build ${cur} -> ${next}   version=${ver}   tag=${tag}"
 echo "commit: $(git log --oneline -1)"

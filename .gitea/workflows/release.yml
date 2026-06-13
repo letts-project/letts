@@ -1,0 +1,60 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: letts-freebsd
+    permissions:
+      contents: write
+    env:
+      # Auto job token. If creating the Gitea release fails with 403, create a
+      # repo secret GITEA_RELEASE_TOKEN (a PAT) and use it here instead.
+      GITEA_TOKEN: ${{ github.token }}
+      GH_PAT: ${{ secrets.GH_PAT }}
+    steps:
+      - name: Checkout the tagged commit (manual; host mode has no node)
+        run: |
+          git init -q
+          git remote get-url origin >/dev/null 2>&1 \
+            || git remote add origin "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git"
+          git -c http.extraHeader="Authorization: token ${GITEA_TOKEN}" \
+              fetch --tags --force --prune origin
+          git checkout -q "${GITHUB_SHA}"
+
+      - name: Build the .deb
+        run: |
+          command -v nfpm >/dev/null 2>&1 \
+            || go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          ./scripts/build/package.sh
+          VER="$(./scripts/build/version.sh)"
+          echo "VER=${VER}" >> "$GITHUB_ENV"
+          echo "DEB=dist/letts_${VER}_amd64.deb" >> "$GITHUB_ENV"
+
+      - name: Generate release notes
+        run: |
+          prev="$(git describe --tags --abbrev=0 'HEAD^' 2>/dev/null || true)"
+          range="${prev:+${prev}..HEAD}"; range="${range:-HEAD}"
+          git log --no-merges --pretty='- %s (%h)' "$range" > notes.md
+          echo "--- notes ---"; cat notes.md
+
+      - name: Publish to Gitea
+        env:
+          GITEA_API: ${{ github.api_url }}
+          GITEA_REPO: ${{ github.repository }}
+        run: ./scripts/build/publish-release.sh gitea "$DEB" "$VER" notes.md
+
+      - name: Publish to GitHub
+        env:
+          GITHUB_REPO: letts-project/letts
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          # Push the tag (and its commit) straight to GitHub instead of waiting
+          # for the Gitea->GitHub mirror, which can lag for hours and leave the
+          # release with no commit to point at (create-release would 422).
+          git push "https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPO}.git" "refs/tags/v${VER}"
+          ./scripts/build/publish-release.sh github "$DEB" "$VER" notes.md
