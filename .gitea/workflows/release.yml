@@ -58,3 +58,9 @@ jobs:
           # release with no commit to point at (create-release would 422).
           git push "https://x-access-token:${GH_PAT}@github.com/${GITHUB_REPO}.git" "refs/tags/v${VER}"
           ./scripts/build/publish-release.sh github "$DEB" "$VER" notes.md
+
+      - name: Publish to apt repo (Gitea Debian registry)
+        env:
+          APT_UPLOAD_URL: ${{ github.server_url }}/api/packages/eswyft/debian/pool/stable/main/upload
+          GITEA_PACKAGE_TOKEN: ${{ secrets.GITEA_PACKAGE_TOKEN }}
+        run: ./scripts/build/publish-apt.sh "$DEB"
