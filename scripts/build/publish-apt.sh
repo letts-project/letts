@@ -2,15 +2,15 @@
 # publish-apt.sh — upload a .deb to the eswyft Gitea Debian package registry.
 # Idempotent: a duplicate version (HTTP 409) is treated as already-published.
 # Only curl is required, so it also runs by hand. Usage: publish-apt.sh <deb>
-#   env: APT_UPLOAD_URL  GITEA_PACKAGE_TOKEN
+#   env: APT_UPLOAD_URL  APT_PACKAGE_TOKEN
 set -euo pipefail
 
 deb="${1:?usage: publish-apt.sh <deb-file>}"
 [ -f "$deb" ] || { echo "publish-apt: deb not found: $deb" >&2; exit 1; }
-: "${APT_UPLOAD_URL:?}" "${GITEA_PACKAGE_TOKEN:?}"
+: "${APT_UPLOAD_URL:?}" "${APT_PACKAGE_TOKEN:?}"
 
 code="$(curl -sS -o /dev/null -w '%{http_code}' \
-  -H "Authorization: token ${GITEA_PACKAGE_TOKEN}" \
+  -H "Authorization: token ${APT_PACKAGE_TOKEN}" \
   --upload-file "$deb" "$APT_UPLOAD_URL")"
 
 case "$code" in

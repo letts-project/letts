@@ -62,5 +62,5 @@ jobs:
       - name: Publish to apt repo (Gitea Debian registry)
         env:
           APT_UPLOAD_URL: ${{ github.server_url }}/api/packages/eswyft/debian/pool/stable/main/upload
-          GITEA_PACKAGE_TOKEN: ${{ secrets.GITEA_PACKAGE_TOKEN }}
+          APT_PACKAGE_TOKEN: ${{ secrets.APT_PACKAGE_TOKEN }}
         run: ./scripts/build/publish-apt.sh "$DEB"
