@@ -10,7 +10,7 @@ deb="${1:?usage: publish-apt.sh <deb-file>}"
 : "${APT_UPLOAD_URL:?}" "${APT_PACKAGE_TOKEN:?}"
 
 code="$(curl -sS -o /dev/null -w '%{http_code}' \
-  -H "Authorization: token ${APT_PACKAGE_TOKEN}" \
+  --user "eswyft:${APT_PACKAGE_TOKEN}" \
   --upload-file "$deb" "$APT_UPLOAD_URL")"
 
 case "$code" in
