@@ -27,6 +27,26 @@ func TestResolveHostViaAlias(t *testing.T) {
 	}
 }
 
+func TestResolveHostViaNumericAlias(t *testing.T) {
+	// A numeric alias key (e.g. `5: srv5`) must resolve when the host is
+	// passed as "5". The host arrives as a plain string from argv and is used
+	// verbatim as the map key, so no integer coercion is involved.
+	c := &Config{
+		Aliases:  map[string]string{"5": "srv5"},
+		Dugdales: []Dugdale{{ID: "srv5", Host: "h"}},
+	}
+	if err := Validate(c); err != nil {
+		t.Fatalf("Validate rejected a numeric alias key: %v", err)
+	}
+	got, err := ResolveHost(c, "5", envFromMap(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "srv5" {
+		t.Errorf("got %q, want %q", got, "srv5")
+	}
+}
+
 func TestResolveHostAliasEnvSubst(t *testing.T) {
 	c := &Config{
 		Aliases:  map[string]string{"local": "${LOCAL_HOST}"},

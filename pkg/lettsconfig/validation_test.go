@@ -35,6 +35,29 @@ func TestValidateDugdaleID(t *testing.T) {
 	}
 }
 
+func TestValidateAliasKey(t *testing.T) {
+	// Alias keys differ from dugdale ids in one way: they may lead with a
+	// digit (e.g. a numeric server number used as the alias handle). Same
+	// charset/length otherwise.
+	good := []string{"5", "0", "5srv", "local", "server-1", "web_prod", "a", "abc1_2-3"}
+	bad := []string{"", "S1", "Local", "with space", "Длинный", "5 srv", "a-b-c-d-e-f-g-h-i-j-k-l-m-n-o-p-q-r-s-t-u-v-w-x-y-z-0-1-2-3-4-5-6-7-8-9-too-long-much"}
+	for _, s := range good {
+		if err := ValidateAliasKey(s); err != nil {
+			t.Errorf("ValidateAliasKey(%q) unexpected error: %v", s, err)
+		}
+	}
+	for _, s := range bad {
+		if err := ValidateAliasKey(s); err == nil {
+			t.Errorf("ValidateAliasKey(%q) want error, got nil", s)
+		}
+	}
+	// A purely numeric key is still NOT a valid dugdale id — only the alias-key
+	// rule was loosened.
+	if err := ValidateDugdaleID("5"); err == nil {
+		t.Error(`ValidateDugdaleID("5") want error, got nil (dugdale-id rule must still require a leading letter)`)
+	}
+}
+
 func TestValidateLaneName(t *testing.T) {
 	good := []string{"normal", "high", "a", "lane-1", "lane_2"}
 	bad := []string{"", "Normal", "1lane", "with space", "this_lane_is_way_too_long_for_thirty_two_chars_limit"}

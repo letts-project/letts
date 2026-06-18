@@ -10,6 +10,7 @@ import (
 var (
 	// Regex table.
 	reDugdaleID = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	reAliasKey  = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 	reLaneName  = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	reLabel     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	reRoute     = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -19,6 +20,17 @@ var (
 func ValidateDugdaleID(s string) error {
 	if !reDugdaleID.MatchString(s) {
 		return fmt.Errorf("invalid dugdale id %q (must match %s)", s, reDugdaleID)
+	}
+	return nil
+}
+
+// ValidateAliasKey validates an alias key. Alias keys are lookup handles, not
+// dugdale ids, so they may also lead with a digit (e.g. a numeric server
+// number, `5: srv5`). Same charset and length bound as a dugdale id
+// otherwise.
+func ValidateAliasKey(s string) error {
+	if !reAliasKey.MatchString(s) {
+		return fmt.Errorf("invalid alias key %q (must match %s)", s, reAliasKey)
 	}
 	return nil
 }
@@ -130,7 +142,7 @@ func ValidateSyntax(c *Config) error {
 		}
 	}
 	for aliasKey, aliasVal := range c.Aliases {
-		if err := ValidateDugdaleID(aliasKey); err != nil {
+		if err := ValidateAliasKey(aliasKey); err != nil {
 			return fmt.Errorf("aliases[%q]: %w", aliasKey, err)
 		}
 		if aliasVal == "" {
