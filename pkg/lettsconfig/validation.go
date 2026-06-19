@@ -2,6 +2,7 @@ package lettsconfig
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -63,6 +64,25 @@ func ValidateTemplateName(s string) error {
 	return nil
 }
 
+// ValidateProxy checks a per-dugdale (or per-template) proxy URL: only
+// socks5:// and socks5h:// are accepted. An empty value means "connect
+// directly" and a value carrying a ${VAR} placeholder is skipped here (it is
+// checked after env substitution at use), mirroring how alias values are
+// handled.
+func ValidateProxy(s string) error {
+	if s == "" || strings.Contains(s, "${") {
+		return nil
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid proxy url %q: %w", s, err)
+	}
+	if u.Scheme != "socks5" && u.Scheme != "socks5h" {
+		return fmt.Errorf("proxy %q: scheme must be socks5 or socks5h", s)
+	}
+	return nil
+}
+
 // Validate runs the full validation: ValidateSyntax then ValidateStructure.
 // Use this on a single, complete config (single-file load, or a merged config
 // after extends resolution).
@@ -101,6 +121,9 @@ func ValidateSyntax(c *Config) error {
 		if d.Port < 0 || d.Port > 65535 {
 			return fmt.Errorf("dugdales[%d] (%q): port %d out of range (1..65535; 0 = use default)", i, d.ID, d.Port)
 		}
+		if err := ValidateProxy(d.Proxy); err != nil {
+			return fmt.Errorf("dugdales[%d] (%q): %w", i, d.ID, err)
+		}
 		for laneName := range d.Lanes {
 			if err := ValidateLaneName(laneName); err != nil {
 				return fmt.Errorf("dugdales[%d].lanes: %w", i, err)
@@ -114,6 +137,9 @@ func ValidateSyntax(c *Config) error {
 	}
 	for name, t := range c.Templates {
 		if err := ValidateTemplateName(name); err != nil {
+			return fmt.Errorf("templates[%q]: %w", name, err)
+		}
+		if err := ValidateProxy(t.Proxy); err != nil {
 			return fmt.Errorf("templates[%q]: %w", name, err)
 		}
 		for laneName := range t.Lanes {

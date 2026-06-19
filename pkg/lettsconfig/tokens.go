@@ -76,6 +76,18 @@ func ResolveToken(c *Config, dugdaleID string, scope Scope, getenv EnvLookup) (s
 	return out, nil
 }
 
+// ResolveProxy returns the env-substituted SOCKS5 proxy URL for a dugdale, or
+// "" when none is configured — meaning "dial directly". Unlike a token, an
+// empty proxy is valid, so this never errors on empty; a genuinely missing
+// ${VAR} still surfaces as *MissingEnvError. Symmetric with BaseURLFor.
+func ResolveProxy(c *Config, dugdaleID string, getenv EnvLookup) (string, error) {
+	d := findDugdale(c, dugdaleID)
+	if d == nil || d.Proxy == "" {
+		return "", nil
+	}
+	return SubstituteEnv(d.Proxy, getenv)
+}
+
 func findDugdale(c *Config, id string) *Dugdale {
 	for i := range c.Dugdales {
 		if c.Dugdales[i].ID == id {

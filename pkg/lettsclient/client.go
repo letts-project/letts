@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/proxy"
 )
 
 // Options configures Client construction.
@@ -35,6 +37,11 @@ type Options struct {
 	// of flapping a healthy dugdale to "unavailable". 4xx is definitive and never
 	// retried; mutations (POST/DELETE) are never retried.
 	RetryReads bool
+	// ProxyURL, when set, routes every connection this client makes through a
+	// SOCKS5 proxy (e.g. "socks5h://127.0.0.1:1080", optionally with embedded
+	// user:pass credentials). The x/net SOCKS5 dialer always resolves DNS at
+	// the proxy, so socks5:// and socks5h:// behave the same.
+	ProxyURL string
 }
 
 // Client is a thin wrapper around http.Client that knows letts conventions.
@@ -89,6 +96,32 @@ func New(opts Options) (*Client, error) {
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ResponseHeaderTimeout: 60 * time.Second,
+	}
+	if opts.ProxyURL != "" {
+		pu, perr := url.Parse(opts.ProxyURL)
+		if perr != nil {
+			return nil, fmt.Errorf("parse ProxyURL: %w", perr)
+		}
+		if pu.Scheme != "socks5" && pu.Scheme != "socks5h" {
+			return nil, fmt.Errorf("ProxyURL scheme must be socks5 or socks5h, got %q", pu.Scheme)
+		}
+		var auth *proxy.Auth
+		if pu.User != nil {
+			pw, _ := pu.User.Password()
+			auth = &proxy.Auth{User: pu.User.Username(), Password: pw}
+		}
+		// Wrap the same net.Dialer (timeout and keep-alive) as the forward dialer
+		// so the proxy-dial leg keeps the current behavior.
+		forward := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+		pd, derr := proxy.SOCKS5("tcp", pu.Host, auth, forward)
+		if derr != nil {
+			return nil, fmt.Errorf("build SOCKS5 dialer: %w", derr)
+		}
+		cd, ok := pd.(proxy.ContextDialer)
+		if !ok {
+			return nil, fmt.Errorf("SOCKS5 dialer does not support context")
+		}
+		tr.DialContext = cd.DialContext
 	}
 	return &Client{
 		base:       u,

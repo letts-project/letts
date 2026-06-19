@@ -44,6 +44,7 @@ type Template struct {
 	Token      string             `yaml:"token,omitempty"`
 	AdminToken string             `yaml:"admin_token,omitempty"`
 	ExecToken  string             `yaml:"exec_token,omitempty"`
+	Proxy      string             `yaml:"proxy,omitempty"`
 	Lanes      map[string]LaneCfg `yaml:"lanes,omitempty"`
 }
 
@@ -75,6 +76,7 @@ type Dugdale struct {
 	Host           string             `yaml:"host,omitempty"`
 	Port           int                `yaml:"port,omitempty"`
 	URL            string             `yaml:"url,omitempty"`
+	Proxy          string             `yaml:"proxy,omitempty"`
 	Extends        string             `yaml:"extends,omitempty"`
 	MissionDir     string             `yaml:"mission_dir,omitempty"`
 	Runtime        Runtime            `yaml:"runtime,omitempty"`

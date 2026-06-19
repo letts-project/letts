@@ -37,6 +37,9 @@ func mergeDugdaleWithTemplate(d *Dugdale, t *Template) {
 	if d.ExecToken == "" {
 		d.ExecToken = t.ExecToken
 	}
+	if d.Proxy == "" {
+		d.Proxy = t.Proxy
+	}
 	// Labels: dugdale replaces template if specified.
 	if d.Labels == nil {
 		d.Labels = append([]string(nil), t.Labels...)

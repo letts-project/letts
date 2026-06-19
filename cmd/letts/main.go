@@ -41,6 +41,7 @@ func newRootCmd() *cobra.Command {
 	root.PersistentFlags().BoolP("quiet", "q", false, "suppress informational output")
 	root.PersistentFlags().StringP("output", "o", "text", "output format: text|json|yaml|ndjson")
 	root.PersistentFlags().Bool("insecure-config-permissions", false, "skip letts.yaml 0600/0400 check (DEV ONLY)")
+	root.PersistentFlags().Bool("ignore-proxy", false, "ignore per-dugdale SOCKS5 proxy and dial directly")
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newCtlCmd())
 	root.AddCommand(newApplyCmd())

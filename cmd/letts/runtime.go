@@ -21,6 +21,7 @@ type appCtx struct {
 	BaseURLForID map[string]string // tests inject overrides
 	Verbose      bool              // --verbose: emit debug diagnostics to Stderr
 	Quiet        bool              // --quiet: suppress informational stderr
+	IgnoreProxy  bool              // --ignore-proxy: dial dugdales directly, ignore proxy: directives
 	Stderr       io.Writer         // diagnostics sink (nil → os.Stderr)
 
 	mu      sync.Mutex
@@ -59,6 +60,9 @@ type appCtxOpts struct {
 	Insecure bool
 	// Verbose mirrors --verbose: emit debug diagnostics to stderr.
 	Verbose bool
+	// IgnoreProxy mirrors --ignore-proxy: dial dugdales directly, ignoring any
+	// per-dugdale proxy: directive in letts.yaml.
+	IgnoreProxy bool
 	// Stderr is the diagnostics sink (nil → os.Stderr). setupAppCtx wires the
 	// cobra command's stderr here so redirection and tests capture diagnostics.
 	Stderr io.Writer
@@ -88,11 +92,12 @@ func newAppCtx(opts appCtxOpts) (*appCtx, error) {
 		return nil, NewConfigError(err.Error())
 	}
 	return &appCtx{
-		Config:  cfg,
-		Getenv:  func(k string) (string, bool) { return os.LookupEnv(k) },
-		clients: map[clientKey]*hostClient{},
-		Verbose: opts.Verbose,
-		Stderr:  opts.Stderr,
+		Config:      cfg,
+		Getenv:      func(k string) (string, bool) { return os.LookupEnv(k) },
+		clients:     map[clientKey]*hostClient{},
+		Verbose:     opts.Verbose,
+		IgnoreProxy: opts.IgnoreProxy,
+		Stderr:      opts.Stderr,
 	}, nil
 }
 
@@ -136,8 +141,15 @@ func (a *appCtx) ClientForHost(dugdaleID string, scope lettsconfig.Scope) (*lett
 	if err != nil {
 		return nil, NewConfigError(err.Error())
 	}
+	var proxyURL string
+	if !a.IgnoreProxy {
+		proxyURL, err = lettsconfig.ResolveProxy(a.Config, dugdaleID, a.Getenv)
+		if err != nil {
+			return nil, NewConfigError(err.Error())
+		}
+	}
 	a.debugf("host %s -> %s (scope %v)", dugdaleID, base, scope)
-	c, err := lettsclient.New(lettsclient.Options{BaseURL: base, Token: tok})
+	c, err := lettsclient.New(lettsclient.Options{BaseURL: base, Token: tok, ProxyURL: proxyURL})
 	if err != nil {
 		return nil, err
 	}

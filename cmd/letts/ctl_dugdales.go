@@ -147,11 +147,12 @@ func setupAppCtx(cmd *cobra.Command) (*appCtx, Format, error) {
 	insecure, _ := cmd.Root().PersistentFlags().GetBool("insecure-config-permissions")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 	quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
+	ignoreProxy, _ := cmd.Root().PersistentFlags().GetBool("ignore-proxy")
 	f, err := ParseFormat(formatStr)
 	if err != nil {
 		return nil, 0, NewBadUsageError(err.Error())
 	}
-	ac, err := newAppCtx(appCtxOpts{ConfigPath: cfgPath, Insecure: insecure, Verbose: verbose, Stderr: cmd.ErrOrStderr()})
+	ac, err := newAppCtx(appCtxOpts{ConfigPath: cfgPath, Insecure: insecure, Verbose: verbose, IgnoreProxy: ignoreProxy, Stderr: cmd.ErrOrStderr()})
 	if err != nil {
 		return nil, 0, err
 	}

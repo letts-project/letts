@@ -532,9 +532,15 @@ selector:
   `host:7180`). A `url:` always wins over host and port. Other fields: `extends` (a template
   name), `mission_dir`, `runtime` (`command_template`, `mission_path_template`,
   `validate_mission_file`), `labels` (used by selectors), per-dugdale `token` /
-  `admin_token` / `exec_token`, and `lanes` (a map of lane name to
-  `{concurrency, paused}`). Every dugdale must resolve to a `host` or a `url` after
-  templates are applied.
+  `admin_token` / `exec_token`, an optional `proxy:` (see below), and `lanes` (a map of
+  lane name to `{concurrency, paused}`). Every dugdale must resolve to a `host` or a `url`
+  after templates are applied.
+- **`dugdales[].proxy`** — an optional `socks5://` / `socks5h://` URL. When set, every
+  connection to that dugdale tunnels through the SOCKS5 proxy. It is inheritable via
+  `extends` and a dugdale's own value overrides the inherited one. DNS is always resolved
+  at the proxy (write `socks5h://`; `socks5://` is treated the same). Credentials may be
+  embedded (`socks5h://user:pass@host:port`, percent-encoded). Run with `--ignore-proxy`
+  to ignore all `proxy:` directives and connect directly.
 - **`templates`** — named clusters of fields a dugdale can inherit via `extends`. Scalar
   fields fill in only where the dugdale left them empty; `labels` and `command_template`
   are replaced wholesale when the dugdale sets them; `lanes` are deep-merged, and a
@@ -659,6 +665,7 @@ Every subcommand inherits these persistent flags:
 | `--config <path>` | auto-discovery | Path to `letts.yaml`. |
 | `-o, --output <format>` | `text` | Output format: `text`, `json`, `yaml`, or `ndjson`. |
 | `--insecure-config-permissions` | `false` | Skip the `letts.yaml` `0600`/`0400` check (development only). |
+| `--ignore-proxy` | `false` | Ignore every per-dugdale `proxy:` directive and connect to dugdales directly. |
 | `-v, --verbose` | `false` | Print debug diagnostics to stderr: the resolved config path, and the base URL and scope each request targets. |
 | `-q, --quiet` | `false` | Suppress informational stderr output (`run`'s event/log tailing, `apply`'s plain-token warning). Results on stdout are unaffected. |
 

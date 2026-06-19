@@ -30,6 +30,7 @@ func newApplyCmd() *cobra.Command {
 			}
 			verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 			quiet, _ := cmd.Root().PersistentFlags().GetBool("quiet")
+			ignoreProxy, _ := cmd.Root().PersistentFlags().GetBool("ignore-proxy")
 			merged, err := loadAndMergeFiles(files)
 			if err != nil {
 				return err
@@ -79,6 +80,7 @@ func newApplyCmd() *cobra.Command {
 			ac.Config = merged
 			ac.Verbose = verbose
 			ac.Quiet = quiet
+			ac.IgnoreProxy = ignoreProxy
 			ac.Stderr = cmd.ErrOrStderr()
 			defer ac.Close()
 			if dryRun {
