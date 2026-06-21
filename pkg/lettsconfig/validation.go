@@ -64,8 +64,8 @@ func ValidateTemplateName(s string) error {
 	return nil
 }
 
-// ValidateProxy checks a per-dugdale (or per-template) proxy URL: only
-// socks5:// and socks5h:// are accepted. An empty value means "connect
+// ValidateProxy checks a per-dugdale (or per-template) proxy URL. Accepted
+// schemes are socks5, socks5h, http, and https. An empty value means "connect
 // directly" and a value carrying a ${VAR} placeholder is skipped here (it is
 // checked after env substitution at use), mirroring how alias values are
 // handled.
@@ -77,10 +77,12 @@ func ValidateProxy(s string) error {
 	if err != nil {
 		return fmt.Errorf("invalid proxy url %q: %w", s, err)
 	}
-	if u.Scheme != "socks5" && u.Scheme != "socks5h" {
-		return fmt.Errorf("proxy %q: scheme must be socks5 or socks5h", s)
+	switch u.Scheme {
+	case "socks5", "socks5h", "http", "https":
+		return nil
+	default:
+		return fmt.Errorf("proxy %q: scheme must be socks5, socks5h, http, or https", s)
 	}
-	return nil
 }
 
 // Validate runs the full validation: ValidateSyntax then ValidateStructure.

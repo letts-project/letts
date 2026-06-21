@@ -150,8 +150,59 @@ func TestClientProxyWithCredentials(t *testing.T) {
 	}
 }
 
-func TestNewRejectsNonSocksProxy(t *testing.T) {
-	if _, err := New(Options{BaseURL: "http://example:7180", ProxyURL: "http://p:8080"}); err == nil {
-		t.Fatal("expected error for non-socks proxy scheme")
+func TestNewRejectsUnknownProxyScheme(t *testing.T) {
+	if _, err := New(Options{BaseURL: "http://example:7180", ProxyURL: "ftp://p:8080"}); err == nil {
+		t.Fatal("expected error for unknown proxy scheme")
+	}
+}
+
+func TestClientRoutesThroughHTTPProxy(t *testing.T) {
+	var hit int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hit, 1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	defer backend.Close()
+
+	// A minimal forward HTTP proxy: it round-trips the absolute-form request the
+	// transport sends and counts proxied requests.
+	var proxied int32
+	proxySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&proxied, 1)
+		outReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		resp, err := http.DefaultTransport.RoundTrip(outReq)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	defer proxySrv.Close()
+
+	c, err := New(Options{BaseURL: backend.URL, ProxyURL: proxySrv.URL}) // proxySrv.URL is http://...
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		OK bool `json:"ok"`
+	}
+	if err := c.DoJSON("GET", "/v1/ping", nil, nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.OK {
+		t.Error("ok = false")
+	}
+	if atomic.LoadInt32(&proxied) == 0 {
+		t.Error("request did not go through the HTTP proxy")
+	}
+	if atomic.LoadInt32(&hit) == 0 {
+		t.Error("backend was not reached")
 	}
 }

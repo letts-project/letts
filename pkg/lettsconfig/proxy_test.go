@@ -7,8 +7,8 @@ import (
 )
 
 func TestValidateProxy(t *testing.T) {
-	good := []string{"", "socks5://127.0.0.1:1080", "socks5h://h:1080", "socks5h://u:p@h:1080", "${PROXY}", "socks5h://${HOST}:1080"}
-	bad := []string{"http://127.0.0.1:8080", "https://h:1", "ftp://h", "socks4://h:1080", "not a url at all ::::"}
+	good := []string{"", "socks5://127.0.0.1:1080", "socks5h://h:1080", "socks5h://u:p@h:1080", "http://h:3128", "https://h:3129", "${PROXY}", "socks5h://${HOST}:1080"}
+	bad := []string{"ftp://h", "socks4://h:1080", "not a url at all ::::"}
 	for _, s := range good {
 		if err := ValidateProxy(s); err != nil {
 			t.Errorf("ValidateProxy(%q) unexpected error: %v", s, err)
@@ -22,10 +22,10 @@ func TestValidateProxy(t *testing.T) {
 }
 
 func TestValidateSyntaxRejectsBadDugdaleProxy(t *testing.T) {
-	c := &Config{Dugdales: []Dugdale{{ID: "s1", Host: "h", Proxy: "http://p:8080"}}}
+	c := &Config{Dugdales: []Dugdale{{ID: "s1", Host: "h", Proxy: "ftp://p:8080"}}}
 	err := ValidateSyntax(c)
-	if err == nil || !strings.Contains(err.Error(), "socks5") {
-		t.Fatalf("want socks5 scheme error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "scheme") {
+		t.Fatalf("want proxy scheme error, got %v", err)
 	}
 }
 

@@ -102,26 +102,17 @@ func New(opts Options) (*Client, error) {
 		if perr != nil {
 			return nil, fmt.Errorf("parse ProxyURL: %w", perr)
 		}
-		if pu.Scheme != "socks5" && pu.Scheme != "socks5h" {
-			return nil, fmt.Errorf("ProxyURL scheme must be socks5 or socks5h, got %q", pu.Scheme)
+		switch pu.Scheme {
+		case "http", "https":
+			// HTTP CONNECT proxy: the stdlib transport handles it directly.
+			tr.Proxy = http.ProxyURL(pu)
+		case "socks5", "socks5h":
+			if derr := setSOCKS5Dialer(tr, pu); derr != nil {
+				return nil, derr
+			}
+		default:
+			return nil, fmt.Errorf("ProxyURL scheme must be socks5, socks5h, http, or https, got %q", pu.Scheme)
 		}
-		var auth *proxy.Auth
-		if pu.User != nil {
-			pw, _ := pu.User.Password()
-			auth = &proxy.Auth{User: pu.User.Username(), Password: pw}
-		}
-		// Wrap the same net.Dialer (timeout and keep-alive) as the forward dialer
-		// so the proxy-dial leg keeps the current behavior.
-		forward := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
-		pd, derr := proxy.SOCKS5("tcp", pu.Host, auth, forward)
-		if derr != nil {
-			return nil, fmt.Errorf("build SOCKS5 dialer: %w", derr)
-		}
-		cd, ok := pd.(proxy.ContextDialer)
-		if !ok {
-			return nil, fmt.Errorf("SOCKS5 dialer does not support context")
-		}
-		tr.DialContext = cd.DialContext
 	}
 	return &Client{
 		base:       u,
@@ -131,6 +122,28 @@ func New(opts Options) (*Client, error) {
 		hc:         &http.Client{Transport: tr, Timeout: opts.Timeout},
 		retryReads: opts.RetryReads,
 	}, nil
+}
+
+// setSOCKS5Dialer points the transport's DialContext at a SOCKS5 proxy.
+func setSOCKS5Dialer(tr *http.Transport, pu *url.URL) error {
+	var auth *proxy.Auth
+	if pu.User != nil {
+		pw, _ := pu.User.Password()
+		auth = &proxy.Auth{User: pu.User.Username(), Password: pw}
+	}
+	// Wrap the same net.Dialer (timeout and keep-alive) as the forward dialer
+	// so the proxy-dial leg keeps the current behavior.
+	forward := &net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	pd, derr := proxy.SOCKS5("tcp", pu.Host, auth, forward)
+	if derr != nil {
+		return fmt.Errorf("build SOCKS5 dialer: %w", derr)
+	}
+	cd, ok := pd.(proxy.ContextDialer)
+	if !ok {
+		return fmt.Errorf("SOCKS5 dialer does not support context")
+	}
+	tr.DialContext = cd.DialContext
+	return nil
 }
 
 // BaseURL exposes the resolved base for diagnostics.
