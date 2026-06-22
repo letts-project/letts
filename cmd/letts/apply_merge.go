@@ -109,6 +109,17 @@ func mergeDugdaleEntry(base, overlay lettsconfig.Dugdale) lettsconfig.Dugdale {
 	if overlay.URL != "" {
 		out.URL = overlay.URL
 	}
+	// Proxy: an explicit `proxy: null` in the overlay deletes it (connect
+	// directly), carried forward as a nullify sentinel so a post-merge
+	// ResolveExtends also drops a template-inherited proxy; otherwise a
+	// non-empty overlay proxy wins.
+	if overlay.ProxyNullified() {
+		out.Proxy = ""
+		out.SetProxyNullified(true)
+	} else if overlay.Proxy != "" {
+		out.Proxy = overlay.Proxy
+		out.SetProxyNullified(false)
+	}
 	if overlay.Extends != "" {
 		out.Extends = overlay.Extends
 	}

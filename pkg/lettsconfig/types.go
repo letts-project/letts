@@ -92,6 +92,11 @@ type Dugdale struct {
 	// sentinel the extends merge can't honor an explicit false from
 	// dugdale over an inherited true from template.
 	runtimeValidateMissionFileSet bool `yaml:"-"`
+	// proxyNullified records whether the YAML set `proxy: null` explicitly.
+	// yaml.v3 collapses null to "" (the zero value), so without this sentinel
+	// the extends merge can't tell "delete the inherited proxy" (connect
+	// directly) from "no proxy specified, inherit it".
+	proxyNullified bool `yaml:"-"`
 }
 
 // HasExplicitValidateMissionFile reports whether the original YAML for
@@ -108,6 +113,19 @@ func (d Dugdale) HasExplicitValidateMissionFile() bool {
 // in cmd/letts can build correctly-flagged merged entries.
 func (d *Dugdale) SetExplicitValidateMissionFile(set bool) {
 	d.runtimeValidateMissionFileSet = set
+}
+
+// ProxyNullified reports whether the dugdale's YAML set `proxy: null`
+// explicitly, instructing extends/merge to drop an inherited proxy (connect
+// directly) instead of inheriting the template's.
+func (d Dugdale) ProxyNullified() bool {
+	return d.proxyNullified
+}
+
+// SetProxyNullified is the writer side of ProxyNullified for the merge step in
+// cmd/letts.
+func (d *Dugdale) SetProxyNullified(set bool) {
+	d.proxyNullified = set
 }
 
 // NullifiedLanes returns the lane names this dugdale's YAML explicitly

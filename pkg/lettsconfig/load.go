@@ -29,7 +29,55 @@ func Load(b []byte) (*Config, error) {
 	if err := extractRuntimeOverrides(&c, b); err != nil {
 		return nil, err
 	}
+	if err := extractNullifiedProxy(&c, b); err != nil {
+		return nil, err
+	}
 	return &c, nil
+}
+
+// extractNullifiedProxy walks the raw YAML once more and flags each Dugdale
+// whose `proxy:` key was set explicitly to null. yaml.v3 decodes that null to
+// the empty string (the zero value), indistinguishable from an absent proxy, so
+// the AST is the only place to tell "delete the inherited proxy" (connect
+// directly) from "inherit the template's proxy".
+func extractNullifiedProxy(c *Config, b []byte) error {
+	var root yaml.Node
+	if err := yaml.Unmarshal(b, &root); err != nil {
+		return nil // already errored above
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return nil
+	}
+	top := root.Content[0]
+	if top.Kind != yaml.MappingNode {
+		return nil
+	}
+	var dugdalesNode *yaml.Node
+	for i := 0; i+1 < len(top.Content); i += 2 {
+		if top.Content[i].Value == "dugdales" {
+			dugdalesNode = top.Content[i+1]
+			break
+		}
+	}
+	if dugdalesNode == nil || dugdalesNode.Kind != yaml.SequenceNode {
+		return nil
+	}
+	for i, dnode := range dugdalesNode.Content {
+		if i >= len(c.Dugdales) || dnode.Kind != yaml.MappingNode {
+			continue
+		}
+		for j := 0; j+1 < len(dnode.Content); j += 2 {
+			k, v := dnode.Content[j], dnode.Content[j+1]
+			if k.Value != "proxy" {
+				continue
+			}
+			if v.Tag == "!!null" || (v.Kind == yaml.ScalarNode && v.Value == "" && v.Tag == "") {
+				c.Dugdales[i].proxyNullified = true
+			}
+			break
+		}
+	}
+	return nil
 }
 
 // extractRuntimeOverrides walks the AST once more to flag each Dugdale

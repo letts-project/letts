@@ -50,6 +50,43 @@ func TestExtendsInheritsProxy(t *testing.T) {
 	}
 }
 
+func TestProxyNullDeletesInheritedProxy(t *testing.T) {
+	// `proxy: null` on the dugdale opts out of the template's proxy entirely
+	// (connect directly), like `lane: null` deletes an inherited lane.
+	yaml := []byte("templates:\n  k: {proxy: \"socks5h://10.0.0.1:1080\"}\ndugdales:\n  - {id: s1, host: h, extends: k, proxy: null}\n")
+	c, err := Load(yaml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.Dugdales[0].ProxyNullified() {
+		t.Fatal("proxy: null must set the nullified flag")
+	}
+	if err := ResolveExtends(c); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Dugdales[0].Proxy; got != "" {
+		t.Errorf("proxy: null must drop the inherited proxy, got %q", got)
+	}
+}
+
+func TestProxyAbsentInheritsFromTemplate(t *testing.T) {
+	// Sanity: without proxy: null, the template proxy is still inherited.
+	yaml := []byte("templates:\n  k: {proxy: \"socks5h://10.0.0.1:1080\"}\ndugdales:\n  - {id: s1, host: h, extends: k}\n")
+	c, err := Load(yaml)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Dugdales[0].ProxyNullified() {
+		t.Fatal("absent proxy must not be flagged nullified")
+	}
+	if err := ResolveExtends(c); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Dugdales[0].Proxy; got != "socks5h://10.0.0.1:1080" {
+		t.Errorf("absent proxy must inherit the template's, got %q", got)
+	}
+}
+
 func TestExtendsProxyDugdaleOverrides(t *testing.T) {
 	c := &Config{
 		Templates: map[string]Template{"k": {Proxy: "socks5h://10.0.0.1:1080"}},

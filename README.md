@@ -540,7 +540,9 @@ selector:
   It is inheritable via `extends` and a dugdale's own value overrides the inherited one.
   For SOCKS, DNS is resolved at the proxy (write `socks5h://`; `socks5://` is treated the
   same). Credentials may be embedded (`socks5h://user:pass@host:port`, percent-encoded).
-  Run with `--ignore-proxy` to ignore all `proxy:` directives and connect directly.
+  Setting `proxy: null` on a dugdale opts it out of an inherited proxy (connect directly),
+  like `lane: null` deletes an inherited lane. Run with `--ignore-proxy` to ignore all
+  `proxy:` directives and connect directly.
 - **`templates`** — named clusters of fields a dugdale can inherit via `extends`. Scalar
   fields fill in only where the dugdale left them empty; `labels` and `command_template`
   are replaced wholesale when the dugdale sets them; `lanes` are deep-merged, and a
