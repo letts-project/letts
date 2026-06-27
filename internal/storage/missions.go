@@ -78,6 +78,41 @@ type DBOrConn interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
+// placeholders returns "?,?,...,?" with n bind placeholders for an IN clause.
+// Callers must keep n within sqlite's variable limit (well under 999); the
+// cleanup batch size does.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// toAnySlice copies a string slice into the []any that database/sql wants for
+// variadic args.
+func toAnySlice(ss []string) []any {
+	args := make([]any, len(ss))
+	for i, s := range ss {
+		args[i] = s
+	}
+	return args
+}
+
+// DeleteMissions deletes the given missions in a SINGLE statement. FK cascades
+// remove the matching mission_runtime, mission_staging_refs and
+// mission_finalize_intents rows. Cleanup uses this instead of one DELETE per id
+// so its writer transaction stays short and does not monopolise the write lock
+// across a large batch (a long single transaction starves dispatch writers
+// out past busy_timeout).
+func DeleteMissions(ctx context.Context, db DBOrConn, ids []string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	q := `DELETE FROM missions WHERE mission_id IN (` + placeholders(len(ids)) + `)`
+	_, err := db.ExecContext(ctx, q, toAnySlice(ids)...)
+	return err
+}
+
 // InsertMission inserts a new row. Caller is responsible for transaction;
 // for stand-alone insert use db, for atomic insert with refs use *sql.Conn.
 func InsertMission(ctx context.Context, db DBOrConn, m *Mission) error {

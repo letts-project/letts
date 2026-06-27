@@ -16,6 +16,14 @@ import (
 	"letts/internal/storage"
 )
 
+const (
+	// recalcYieldEvery / recalcYieldPause bound how long the post-delete
+	// staging-TTL recalc loop may run back-to-back writer transactions before
+	// yielding the write lock to other writers (notably dispatch).
+	recalcYieldEvery = 64
+	recalcYieldPause = 20 * time.Millisecond
+)
+
 // MissionCleaner walks done/deleting missions on a periodic ticker and runs
 // the two-phase cleanup: pick victims, mark deleting, remove files,
 // SQL DELETE, recalc affected staging TTLs.
@@ -221,24 +229,19 @@ func (c *MissionCleaner) processBatch(ctx context.Context, victims []string) {
 	// row's time_expires at 0 (set by the trigger) until the next GC
 	// cycle catches up. Low impact (the trigger still correctness-flags
 	// the row), but moving the read into the tx makes the pass exact.
-	affected := make(map[string]struct{})
+	//
+	// Both the collect and the delete are SINGLE IN-list statements: one
+	// RefsByMission + one DELETE per victim turned this transaction into ~2
+	// statements per row, holding the write lock long enough (seconds, on a
+	// large batch of real rows) to starve dispatch writers past busy_timeout.
+	var affected []string
 	if err := storage.WithWriter(ctx, c.DB, func(conn *sql.Conn) error {
-		for _, id := range victims {
-			refs, err := storage.RefsByMission(ctx, conn, id)
-			if err != nil {
-				c.logger().Warn("RefsByMission failed", "id", id, "err", err)
-				continue
-			}
-			for _, r := range refs {
-				affected[r.StagingID] = struct{}{}
-			}
+		sids, err := storage.StagingIDsForMissions(ctx, conn, victims)
+		if err != nil {
+			return err
 		}
-		for _, id := range victims {
-			if _, err := conn.ExecContext(ctx, `DELETE FROM missions WHERE mission_id=?`, id); err != nil {
-				return err
-			}
-		}
-		return nil
+		affected = sids
+		return storage.DeleteMissions(ctx, conn, victims)
 	}); err != nil {
 		c.logger().Error("cleanup DELETE batch", "err", err)
 		return
@@ -253,7 +256,7 @@ func (c *MissionCleaner) processBatch(ctx context.Context, victims []string) {
 		DownloadGrace:  c.Cfg.Cleanup.DownloadedGrace,
 	}
 	nowMs := time.Now().UnixMilli()
-	for sid := range affected {
+	for i, sid := range affected {
 		// SELECT-compute-UPDATE must be inside a writer tx so
 		// a concurrent dispatch's recalc on the same staging_id can't
 		// overwrite ours mid-flight. Holding the lock per-id (not for
@@ -264,6 +267,17 @@ func (c *MissionCleaner) processBatch(ctx context.Context, victims []string) {
 		})
 		if err != nil {
 			c.logger().Warn("RecalcStagingTTL", "staging_id", sid, "err", err)
+		}
+		// Yield the write lock periodically: a batch that touches many
+		// staging rows would otherwise fire these back-to-back writer
+		// transactions with no gap, re-acquiring the lock before a waiting
+		// dispatch can, and starve it for the whole loop.
+		if (i+1)%recalcYieldEvery == 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(recalcYieldPause):
+			}
 		}
 	}
 }

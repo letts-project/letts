@@ -46,6 +46,34 @@ func RefsByMission(ctx context.Context, db DBOrConn, missionID string) ([]Stagin
 	return scanRefs(rows)
 }
 
+// StagingIDsForMissions returns the distinct staging_ids referenced by any of
+// the given missions, in ONE query. Cleanup uses it to collect the staging
+// rows whose TTL must be recomputed after a mission batch is deleted, instead
+// of one RefsByMission query per mission inside the delete transaction (which
+// inflated that transaction to ~2 statements per victim and held the write
+// lock far too long).
+func StagingIDsForMissions(ctx context.Context, db DBOrConn, missionIDs []string) ([]string, error) {
+	if len(missionIDs) == 0 {
+		return nil, nil
+	}
+	q := `SELECT DISTINCT staging_id FROM mission_staging_refs WHERE mission_id IN (` +
+		placeholders(len(missionIDs)) + `)`
+	rows, err := db.QueryContext(ctx, q, toAnySlice(missionIDs)...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var sid string
+		if err := rows.Scan(&sid); err != nil {
+			return nil, err
+		}
+		out = append(out, sid)
+	}
+	return out, rows.Err()
+}
+
 // RefsByStaging returns all refs pointing at the given staging file.
 func RefsByStaging(ctx context.Context, db DBOrConn, stagingID string) ([]StagingRef, error) {
 	rows, err := db.QueryContext(ctx, `SELECT mission_id, staging_id, ref_kind, role
