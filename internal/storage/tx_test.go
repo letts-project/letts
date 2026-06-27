@@ -3,11 +3,111 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
+
+// openShortBusy opens a state.db with a short busy_timeout so write-lock
+// contention surfaces as SQLITE_BUSY in ~100ms instead of the 5s default,
+// keeping the retry tests fast and deterministic. Uses the in-package
+// connector directly to override the DSN that Open hardcodes.
+func openShortBusy(t *testing.T, path string) *sql.DB {
+	t.Helper()
+	connector := &lettsConnector{dsn: path + "?_pragma=busy_timeout(100)", opts: Options{}}
+	db := sql.OpenDB(connector)
+	if err := initDatabaseOnce(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func TestIsBusy(t *testing.T) {
+	if IsBusy(nil) {
+		t.Error("IsBusy(nil) = true, want false")
+	}
+	if IsBusy(errors.New("some other error")) {
+		t.Error("IsBusy(generic) = true, want false")
+	}
+
+	// A real SQLITE_BUSY: hold the write lock on one conn, attempt a write on
+	// another (short busy_timeout makes it fail quickly).
+	dir := t.TempDir()
+	db := openShortBusy(t, filepath.Join(dir, "state.db"))
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec("CREATE TABLE k (v INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	holder, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = holder.Close() }()
+	if _, err := holder.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = holder.ExecContext(context.Background(), "ROLLBACK") }()
+
+	err = WithWriter(context.Background(), db, func(c *sql.Conn) error {
+		_, e := c.ExecContext(context.Background(), "INSERT INTO k(v) VALUES (1)")
+		return e
+	})
+	if err == nil {
+		t.Fatal("expected a busy error while the write lock is held")
+	}
+	if !IsBusy(err) {
+		t.Errorf("IsBusy(%v) = false, want true", err)
+	}
+}
+
+// TestWithWriterRetrySucceedsAfterContention proves the finalize-stranding fix:
+// a writer that hits transient SQLITE_BUSY must retry and eventually commit,
+// where a single WithWriter would have failed and (for finalize) left the
+// mission stuck in status='running' forever.
+func TestWithWriterRetrySucceedsAfterContention(t *testing.T) {
+	dir := t.TempDir()
+	db := openShortBusy(t, filepath.Join(dir, "state.db"))
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec("CREATE TABLE k (v INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+
+	holder, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := holder.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	// Release the write lock after ~350ms — long enough that the first
+	// WithWriterRetry attempts (busy_timeout 100ms + backoff) fail busy and
+	// must retry.
+	go func() {
+		time.Sleep(350 * time.Millisecond)
+		_, _ = holder.ExecContext(context.Background(), "ROLLBACK")
+		_ = holder.Close()
+	}()
+
+	start := time.Now()
+	if err := WithWriterRetry(context.Background(), db, func(c *sql.Conn) error {
+		_, e := c.ExecContext(context.Background(), "INSERT INTO k(v) VALUES (1)")
+		return e
+	}); err != nil {
+		t.Fatalf("WithWriterRetry never committed despite the lock being released: %v", err)
+	}
+	if d := time.Since(start); d < 300*time.Millisecond {
+		t.Errorf("committed in %v — too fast to have retried through the held lock", d)
+	}
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM k").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("row count = %d, want 1", n)
+	}
+}
 
 // TestWithWriterCanceledCtxDoesNotPoisonPool verifies that if fn fails
 // because the caller's ctx is cancelled mid-transaction, WithWriter's ROLLBACK

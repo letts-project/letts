@@ -5,7 +5,39 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
+
+	"modernc.org/sqlite"
 )
+
+// SQLite primary result codes for lock contention. Extended codes (e.g.
+// SQLITE_BUSY_SNAPSHOT=517, SQLITE_LOCKED_SHAREDCACHE=262) carry one of these
+// in their low byte, which is why IsBusy masks with 0xFF.
+const (
+	sqliteBusy   = 5 // SQLITE_BUSY
+	sqliteLocked = 6 // SQLITE_LOCKED
+)
+
+// IsBusy reports whether err (anywhere in its wrap chain) is a transient
+// SQLite lock-contention error — SQLITE_BUSY (5) or SQLITE_LOCKED (6),
+// including their extended variants such as SQLITE_BUSY_SNAPSHOT (517), which
+// busy_timeout does NOT retry on its own. These are safe to retry: the
+// statement acquired no partial state (the transaction never started or was
+// rolled back). Used by WithWriterRetry so a transient lock never drops a
+// terminal mission outcome.
+func IsBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	var se *sqlite.Error
+	if errors.As(err, &se) {
+		switch se.Code() & 0xFF {
+		case sqliteBusy, sqliteLocked:
+			return true
+		}
+	}
+	return false
+}
 
 // WithWriter runs fn inside a BEGIN IMMEDIATE transaction on a pinned conn.
 // Returning an error from fn rolls back; nil error commits. Use this for any
@@ -61,4 +93,40 @@ func WithWriter(ctx context.Context, db *sql.DB, fn func(*sql.Conn) error) error
 	}
 	finished = true
 	return nil
+}
+
+// WithWriterRetry is WithWriter with bounded retry on transient SQLite lock
+// contention (see IsBusy). Use it for writes whose failure is unacceptable —
+// above all mission finalize: busy_timeout (5s) makes a single BEGIN IMMEDIATE
+// give up under a write-lock storm, and BUSY_SNAPSHOT (517) is not retried by
+// busy_timeout at all. Without retry a transient lock drops the terminal
+// outcome and strands the row in status='running' forever, with its OS process
+// already gone (2026-06-27 incident).
+//
+// Each attempt is a complete, atomic BEGIN IMMEDIATE..COMMIT (or rollback), so
+// retrying is idempotent: a failed attempt left no partial state. Non-busy
+// errors are returned immediately. The caller's ctx still bounds the wait —
+// finalize passes a context.WithoutCancel ctx so shutdown can't abort a
+// durable terminal write mid-retry.
+func WithWriterRetry(ctx context.Context, db *sql.DB, fn func(*sql.Conn) error) error {
+	const maxAttempts = 10
+	backoff := 50 * time.Millisecond
+	const maxBackoff = 2 * time.Second
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = WithWriter(ctx, db, fn)
+		if err == nil || !IsBusy(err) || attempt == maxAttempts {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		if backoff < maxBackoff {
+			if backoff *= 2; backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		}
+	}
 }

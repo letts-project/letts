@@ -112,3 +112,19 @@ func (r *Runtime) IsRunning(missionID string) bool {
 	_, ok := r.killChs[missionID]
 	return ok
 }
+
+// LiveMissionIDs returns the IDs of missions that currently have a live run
+// goroutine (a registered kill channel: set just before spawn, deleted once
+// mission.Run returns). This is the authoritative "still in-flight" set used
+// by graceful shutdown. A mission's status='running' DB row that is absent
+// here is stranded — its process is gone and its finalize never landed — so
+// the drain must not wait for it; startup repair reclaims it as 'lost'.
+func (r *Runtime) LiveMissionIDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ids := make([]string, 0, len(r.killChs))
+	for id := range r.killChs {
+		ids = append(ids, id)
+	}
+	return ids
+}

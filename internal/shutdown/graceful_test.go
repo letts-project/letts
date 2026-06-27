@@ -33,7 +33,11 @@ func setupShutdownDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func insertRunningMission(t *testing.T, db *sql.DB, lane string) string {
+// insertRunningMission inserts a status='running' row and, when killer != nil,
+// registers it in the killer's live set — modelling reality, where a running
+// mission has both a DB row and a live run goroutine. Pass killer == nil to
+// simulate a STRANDED row (running in the DB but with no live goroutine).
+func insertRunningMission(t *testing.T, db *sql.DB, killer *fakeKiller, lane string) string {
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
@@ -46,13 +50,22 @@ func insertRunningMission(t *testing.T, db *sql.DB, lane string) string {
 	if err := storage.InsertMission(context.Background(), db, &m); err != nil {
 		t.Fatal(err)
 	}
+	if killer != nil {
+		killer.addLive(id)
+	}
 	return id
 }
 
-func markMissionDone(t *testing.T, db *sql.DB, id string) {
+// markMissionDone finalizes a fixture mission: marks the DB row done and (when
+// killer != nil) removes it from the live set, mirroring how mission.Run's
+// finalize and the runtime's spawn defer both fire at completion.
+func markMissionDone(t *testing.T, db *sql.DB, killer *fakeKiller, id string) {
 	t.Helper()
 	if _, err := db.Exec(`UPDATE missions SET status='done', outcome='success' WHERE mission_id=?`, id); err != nil {
 		t.Fatal(err)
+	}
+	if killer != nil {
+		killer.removeLive(id)
 	}
 }
 
@@ -61,6 +74,7 @@ type fakeKiller struct {
 	calls  []killCall
 	reject bool
 	onSig  func(id string)
+	live   map[string]bool
 }
 
 type killCall struct {
@@ -78,6 +92,33 @@ func (f *fakeKiller) SignalKill(id string, reason mission.ExternalKillReason) bo
 		cb(id)
 	}
 	return !rej
+}
+
+// LiveMissionIDs returns the registered live-mission set — the in-flight
+// snapshot the coordinator's drain waits on.
+func (f *fakeKiller) LiveMissionIDs() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	ids := make([]string, 0, len(f.live))
+	for id := range f.live {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func (f *fakeKiller) addLive(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.live == nil {
+		f.live = make(map[string]bool)
+	}
+	f.live[id] = true
+}
+
+func (f *fakeKiller) removeLive(id string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.live, id)
 }
 
 func (f *fakeKiller) signalCount() int {
@@ -220,9 +261,9 @@ func TestCoordinatorFinishesWhenNoRunning(t *testing.T) {
 
 func TestCoordinatorWaitsForRunningToDrain(t *testing.T) {
 	db := setupShutdownDB(t)
-	c, _, _, ctx := newTestCoord(t, db)
-	id1 := insertRunningMission(t, db, "normal")
-	id2 := insertRunningMission(t, db, "normal")
+	c, _, killer, ctx := newTestCoord(t, db)
+	id1 := insertRunningMission(t, db, killer, "normal")
+	id2 := insertRunningMission(t, db, killer, "normal")
 
 	c.Stop(ctx)
 
@@ -235,13 +276,40 @@ func TestCoordinatorWaitsForRunningToDrain(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 
-	markMissionDone(t, db, id1)
-	markMissionDone(t, db, id2)
+	markMissionDone(t, db, killer, id1)
+	markMissionDone(t, db, killer, id2)
 
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("Wait didn't return after missions marked done")
+	}
+}
+
+// TestCoordinatorDoesNotWaitForStrandedRunningRow is the regression test for
+// the 2026-06-27 graceful-restart hang. A row left status='running' with NO
+// live mission goroutine — its OS process already gone and its finalize never
+// landed (a transient DB lock during finalize) — must NOT block the drain
+// forever. Before the fix drainLoop waited until the DB 'running' count hit 0,
+// so the stranded row never cleared, SignalKill returned false every tick
+// ("kill signal not delivered"), and systemctl restart hung until kill -9.
+// Now completion is decided by the in-memory live set, so the drain converges
+// and startup repair reclaims the row as 'lost' on the next boot.
+func TestCoordinatorDoesNotWaitForStrandedRunningRow(t *testing.T) {
+	db := setupShutdownDB(t)
+	c, _, _, ctx := newTestCoord(t, db)
+	// nil killer => inserted as a DB 'running' row with NO live registration:
+	// exactly a stranded row.
+	_ = insertRunningMission(t, db, nil, "normal")
+
+	c.Stop(ctx)
+	select {
+	case <-waitChan(c):
+	case <-time.After(time.Second):
+		t.Fatal("drain hung on a stranded running row (no live goroutine)")
+	}
+	if c.Phase() != shutdown.PhaseDone {
+		t.Errorf("Phase=%s, want done", c.Phase())
 	}
 }
 
@@ -253,8 +321,8 @@ func TestCoordinatorWaitsForRunningToDrain(t *testing.T) {
 // `lost` on the next start instead of killed/dugdale_shutdown.
 func TestCoordinatorDrainErrorDoesNotDeclareDone(t *testing.T) {
 	db := setupShutdownDB(t)
-	c, _, _, ctx := newTestCoord(t, db)
-	_ = insertRunningMission(t, db, "normal")
+	c, _, killer, ctx := newTestCoord(t, db)
+	_ = insertRunningMission(t, db, killer, "normal")
 
 	c.Stop(ctx)
 
@@ -282,10 +350,11 @@ func TestCoordinatorAggressiveSignalsKill(t *testing.T) {
 	db := setupShutdownDB(t)
 	c, _, killer, ctx := newTestCoord(t, db)
 
-	id := insertRunningMission(t, db, "normal")
+	id := insertRunningMission(t, db, killer, "normal")
 	killer.onSig = func(missionID string) {
-		// Simulate the mission's kill watcher → finalize → done.
-		markMissionDone(t, db, missionID)
+		// Simulate the mission's kill watcher → finalize → done: the DB row
+		// goes done and the mission leaves the live set.
+		markMissionDone(t, db, killer, missionID)
 	}
 
 	c.Stop(ctx) // → Draining
@@ -340,11 +409,11 @@ func TestCoordinatorPausesLanes(t *testing.T) {
 
 func TestCoordinatorPrintStatusFormat(t *testing.T) {
 	db := setupShutdownDB(t)
-	c, _, _, ctx := newTestCoord(t, db)
+	c, _, killer, ctx := newTestCoord(t, db)
 	buf := &syncBuf{}
 	c.StatusOut = buf
 
-	insertRunningMission(t, db, "normal")
+	insertRunningMission(t, db, killer, "normal")
 	c.Stop(ctx)
 
 	// Wait for the drain loop to print at least once.
@@ -374,19 +443,20 @@ func TestCoordinatorAggressiveWithoutKillerLogsWarn(t *testing.T) {
 	c.AggressiveInterval = 5 * time.Millisecond
 	c.StatusOut = &syncBuf{}
 
-	id := insertRunningMission(t, db, "normal")
+	id := insertRunningMission(t, db, nil, "normal")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c.Stop(ctx)
 	c.Stop(ctx)
 	// Without killer, missions don't get signalled — drain wouldn't converge
-	// unless we mark them done externally.
+	// unless we mark them done externally. With a nil Killer, drainComplete
+	// falls back to the DB row count.
 	time.Sleep(50 * time.Millisecond)
 	if c.Phase() != shutdown.PhaseAggressive {
 		t.Errorf("Phase=%s, want aggressive", c.Phase())
 	}
 	// Mark done so drain converges before test ends.
-	markMissionDone(t, db, id)
+	markMissionDone(t, db, nil, id)
 	select {
 	case <-waitChan(c):
 	case <-time.After(time.Second):
@@ -396,8 +466,8 @@ func TestCoordinatorAggressiveWithoutKillerLogsWarn(t *testing.T) {
 
 func TestCoordinatorCtxCancelExitsDrain(t *testing.T) {
 	db := setupShutdownDB(t)
-	c, _, _, _ := newTestCoord(t, db)
-	insertRunningMission(t, db, "normal")
+	c, _, killer, _ := newTestCoord(t, db)
+	insertRunningMission(t, db, killer, "normal")
 	ctx, cancel := context.WithCancel(context.Background())
 	c.Stop(ctx)
 	cancel()

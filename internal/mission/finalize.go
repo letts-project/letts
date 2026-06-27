@@ -138,7 +138,10 @@ func Finalize(ctx context.Context, db *sql.DB, in FinalizeInputs) error {
 	}
 
 	// Phase A2: durable intent and pending_output rows.
-	if err := storage.WithWriter(ctx, db, func(c *sql.Conn) error {
+	// WithWriterRetry (not WithWriter): a dropped terminal outcome strands the
+	// mission in status='running' forever with its process already gone, so a
+	// transient lock must be retried, never surfaced as a finalize failure.
+	if err := storage.WithWriterRetry(ctx, db, func(c *sql.Conn) error {
 		for _, op := range in.Outputs {
 			sf := &storage.StagingFile{
 				StagingID:     op.StagingID,
@@ -170,7 +173,7 @@ func Finalize(ctx context.Context, db *sql.DB, in FinalizeInputs) error {
 	}
 
 	// Phase B step 1: transition staging rows and intent phase to committing.
-	if err := storage.WithWriter(ctx, db, func(c *sql.Conn) error {
+	if err := storage.WithWriterRetry(ctx, db, func(c *sql.Conn) error {
 		for _, op := range in.Outputs {
 			if _, err := c.ExecContext(ctx,
 				`UPDATE staging_files SET state='committing'
@@ -234,7 +237,7 @@ func ContinuePhaseB(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 	if len(outputs) == 0 {
 		return commitFinalize(ctx, db, ew, intent, nil, cfg, kind, lane, ts)
 	}
-	if err := storage.WithWriter(ctx, db, func(c *sql.Conn) error {
+	if err := storage.WithWriterRetry(ctx, db, func(c *sql.Conn) error {
 		for _, op := range outputs {
 			if _, err := c.ExecContext(ctx,
 				`UPDATE staging_files SET state='committing'
@@ -441,7 +444,10 @@ func commitFinalize(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 		finishedMs = time.Now().UnixMilli()
 	}
 	var missionGone bool
-	if err := storage.WithWriter(ctx, db, func(c *sql.Conn) error {
+	// WithWriterRetry: this is the single UPDATE that moves the row out of
+	// 'running' to 'done'. A transient lock here is exactly what stranded
+	// missions in the 2026-06-27 incident, so it must retry rather than fail.
+	if err := storage.WithWriterRetry(ctx, db, func(c *sql.Conn) error {
 		// Status guard: only 'running' (the normal in-flight state) and
 		// 'queued' (the queued-kill path commits terminal outcomes for rows
 		// that never started) may transition to 'done'. An unguarded UPDATE
@@ -601,7 +607,7 @@ func revertFailedCommit(ctx context.Context, db *sql.DB, ew *eventfile.Writer, i
 		return errors.Join(cause, err)
 	}
 
-	if err := storage.WithWriter(ctx, db, func(c *sql.Conn) error {
+	if err := storage.WithWriterRetry(ctx, db, func(c *sql.Conn) error {
 		if _, err := c.ExecContext(ctx, `UPDATE mission_finalize_intents
 			SET phase='prepared', outcome='failed', fail_reason=?,
 			    fail_message=?, fail_details=NULL, return_value=NULL,

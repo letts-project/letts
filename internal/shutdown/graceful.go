@@ -58,10 +58,16 @@ func (p Phase) String() string {
 }
 
 // Killer is the subset of runtime.Runtime that the coordinator uses to
-// trigger an aggressive kill. Defined as an interface so tests can stub
-// without spawning real missions.
+// trigger an aggressive kill and to learn which missions are still genuinely
+// in-flight. Defined as an interface so tests can stub without spawning real
+// missions.
 type Killer interface {
 	SignalKill(missionID string, reason mission.ExternalKillReason) bool
+	// LiveMissionIDs returns the IDs of missions with a live run goroutine —
+	// the authoritative in-flight set the drain waits on. It is independent of
+	// the DB, so neither a lock storm nor a 'running' row stranded by a failed
+	// finalize (no live goroutine) can stall shutdown.
+	LiveMissionIDs() []string
 }
 
 // Coordinator orchestrates graceful shutdown. Construct via New; call Stop
@@ -168,14 +174,14 @@ func (c *Coordinator) drainLoop(ctx context.Context) {
 	for {
 		rows, err := c.listRunning(ctx)
 		if err != nil {
-			// A transient DB error must NOT count as drain
-			// complete. Treating nil/empty as "all done" let SIGTERM
-			// during a busy_timeout-storm declare PhaseDone while
-			// mission processes were still running; their outcomes
-			// then landed as `lost` on the next start instead of
-			// `killed/dugdale_shutdown`. Log and retry.
+			// A transient DB error must NOT stall or falsely complete the
+			// drain. Completion is decided by drainComplete from the in-memory
+			// live-mission set, which never touches the DB, so a busy/closed DB
+			// here costs only this tick's status print and re-signal.
 			c.Logger.Warn("graceful shutdown: listRunning error; will retry", "err", err)
-		} else if len(rows) == 0 {
+		}
+
+		if c.drainComplete(rows, err) {
 			if c.Mgr != nil {
 				c.Mgr.StopAll()
 			}
@@ -184,20 +190,24 @@ func (c *Coordinator) drainLoop(ctx context.Context) {
 			c.finish()
 			return
 		}
-		// In aggressive phase, re-signal every running mission on every
-		// tick. SignalKill is idempotent at the runtime layer (returns
-		// false when the kill channel already has a pending signal), so
-		// the cost is bounded; the benefit is that missions which
-		// transitioned queued→running just after the initial
-		// aggressiveKillAll snapshot still get a kill — otherwise the
-		// drain loop would wait for them forever.
-		if c.Phase() == PhaseAggressive && c.Killer != nil {
-			for _, r := range rows {
-				_ = c.Killer.SignalKill(r.ID, mission.KillDugdaleShutdown)
+
+		if err == nil {
+			// In aggressive phase, re-signal every running mission on every
+			// tick. SignalKill is idempotent at the runtime layer (returns
+			// false when the kill channel already has a pending signal, or when
+			// the row is stranded with no live goroutine), so the cost is
+			// bounded; the benefit is that missions which transitioned
+			// queued→running just after the initial aggressiveKillAll snapshot
+			// still get a kill. Stranded rows never block completion —
+			// drainComplete excludes them.
+			if c.Phase() == PhaseAggressive && c.Killer != nil {
+				for _, r := range rows {
+					_ = c.Killer.SignalKill(r.ID, mission.KillDugdaleShutdown)
+				}
 			}
-		}
-		if c.Phase() == PhaseDraining {
-			c.printStatus(rows)
+			if c.Phase() == PhaseDraining {
+				c.printStatus(rows)
+			}
 		}
 		sleep := statusInterval
 		if c.Phase() == PhaseAggressive {
@@ -211,6 +221,25 @@ func (c *Coordinator) drainLoop(ctx context.Context) {
 		case <-time.After(sleep):
 		}
 	}
+}
+
+// drainComplete reports whether the drain has finished. The authoritative
+// signal is the in-memory live-mission set from the Killer (the runtime
+// kill-channel registry): a mission with a live run goroutine is genuinely
+// in-flight, whereas a status='running' DB row WITHOUT one is stranded — its
+// process is already gone and its finalize never landed (e.g. a transient DB
+// lock during finalize left it stuck) — so waiting for it would hang shutdown
+// forever (the 2026-06-27 incident, where a graceful restart never converged
+// and had to be kill -9'd). Startup repair reclaims stranded rows as 'lost' on
+// the next boot.
+//
+// With no Killer wired (tests), it falls back to the DB snapshot and, as
+// before, never treats a transient listRunning error as completion.
+func (c *Coordinator) drainComplete(rows []runningRow, listErr error) bool {
+	if c.Killer != nil {
+		return len(c.Killer.LiveMissionIDs()) == 0
+	}
+	return listErr == nil && len(rows) == 0
 }
 
 func (c *Coordinator) aggressiveKillAll(ctx context.Context) {

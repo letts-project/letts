@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -88,6 +89,71 @@ func TestVacuumRunOnceTruncatesWAL(t *testing.T) {
 	}
 	if postInfo.Size() != 0 {
 		t.Errorf("WAL not truncated: pre=%d post=%d", preSize, postInfo.Size())
+	}
+}
+
+// buildFreelistDB returns a fresh state.db with a freelist built by inserting
+// then deleting padded rows. Deterministic fixtures (fixed ids/content) so two
+// DBs built this way are byte-comparable for the equivalence test.
+func buildFreelistDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := storage.Open(filepath.Join(dir, "state.db"), storage.Options{})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := storage.Migrate(context.Background(), db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ctx := context.Background()
+	for i := 0; i < 300; i++ {
+		mid := "0192bbbb-0000-7000-8000-" + leftPadHex(int64(i), 12)
+		if err := storage.InsertMission(ctx, db, &storage.Mission{
+			ID: mid, Kind: storage.KindMission, Lane: "normal", MissionName: "VacFixture",
+			Status: storage.StatusQueued, Input: []byte(`{"pad":"` + strings.Repeat("ab", 256) + `"}`),
+			InputFingerprint: "fp-" + mid, TimeCreatedMs: int64(1_700_000_000_000 + i),
+		}); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	if _, err := db.Exec(`DELETE FROM missions`); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	return db
+}
+
+func freelistCount(t *testing.T, db *sql.DB) int64 {
+	t.Helper()
+	var n int64
+	if err := db.QueryRow(`PRAGMA freelist_count`).Scan(&n); err != nil {
+		t.Fatalf("freelist_count: %v", err)
+	}
+	return n
+}
+
+// TestVacuumIncrementalReclaimsInBatches exercises the bounded multi-batch
+// vacuum loop (a tiny BatchPages forces several iterations) and asserts it
+// makes progress reclaiming the freelist without erroring. The fix bounds how
+// long a single incremental_vacuum statement holds the write lock; it must not
+// regress reclamation (the freelist may only shrink), and at least the
+// reclaimable trailing pages must be returned.
+func TestVacuumIncrementalReclaimsInBatches(t *testing.T) {
+	ctx := context.Background()
+	db := buildFreelistDB(t)
+	before := freelistCount(t, db)
+	if before == 0 {
+		t.Skip("no freelist built; nothing to reclaim")
+	}
+
+	// Tiny batch -> the loop runs multiple bounded statements rather than one
+	// unbounded one.
+	v := &cleanup.Vacuumer{DB: db, Logger: slog.Default(), BatchPages: 4}
+	v.RunOnce(ctx)
+
+	after := freelistCount(t, db)
+	if after >= before {
+		t.Errorf("bounded vacuum made no progress: before=%d after=%d", before, after)
 	}
 }
 

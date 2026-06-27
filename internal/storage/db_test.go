@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestOpenEnablesIncrementalAutoVacuum verifies that
@@ -24,6 +25,57 @@ func TestOpenEnablesIncrementalAutoVacuum(t *testing.T) {
 	}
 	if av != 2 { // 2 == INCREMENTAL
 		t.Errorf("auto_vacuum = %d, want 2 (INCREMENTAL)", av)
+	}
+}
+
+// TestNewConnInitDoesNotNeedWriteLock is the regression test for the
+// 2026-06-27 "database is locked" storm. Per-connection init must NOT acquire
+// the write lock, so a connection opened to serve a READ can always come
+// online even while a writer holds the write lock. Before the fix the
+// connector ran auto_vacuum=INCREMENTAL and incremental_vacuum(1000) on every
+// Connect — both take the write lock — so a brand-new connection (even one
+// opened only to serve a read) blocked on, and then failed under, a held
+// write lock. Heavy read traffic then forced ever more blocked writers,
+// turning localized contention into a self-sustaining outage.
+func TestNewConnInitDoesNotNeedWriteLock(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(filepath.Join(dir, "state.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if _, err := db.Exec(`CREATE TABLE t (x INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pin a connection and hold an open write transaction (the write lock).
+	writer, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = writer.Close() }()
+	if _, err := writer.ExecContext(context.Background(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = writer.ExecContext(context.Background(), "ROLLBACK") }()
+
+	// Open a BRAND-NEW connection (writer is checked out, so the pool must
+	// create a fresh physical connection -> runs the connector init) and use
+	// it for a read under a short deadline. If init needed the write lock it
+	// would block on the held writer and miss the deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	reader, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("opening a new connection while a writer holds the lock failed: %v", err)
+	}
+	defer func() { _ = reader.Close() }()
+	var one int
+	if err := reader.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		t.Fatalf("read on new connection blocked by held write lock: %v", err)
+	}
+	if one != 1 {
+		t.Fatalf("SELECT 1 = %d", one)
 	}
 }
 
