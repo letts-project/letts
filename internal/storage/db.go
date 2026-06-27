@@ -41,11 +41,11 @@ func Open(path string, opts Options) (*sql.DB, error) {
 	// require the write lock to apply, so they MUST NOT live in the
 	// per-connection connector: doing them per-connection meant every new
 	// pooled connection — including one opened only to serve a READ — had to
-	// take the write lock to come online. Under write contention that turned a
+	// take the write lock to come online. Under write contention that turns a
 	// localized stall into a self-sustaining "database is locked" storm, where
-	// read load forced new connections whose init was itself a blocked writer
-	// (2026-06-27 incident). Running them here, once, while nothing contends
-	// the lock keeps connection init lock-free forever after.
+	// read load forces new connections whose init is itself a blocked writer.
+	// Running them here, once, while nothing contends the lock keeps connection
+	// init lock-free forever after.
 	if err := initDatabaseOnce(context.Background(), db); err != nil {
 		_ = db.Close()
 		return nil, err

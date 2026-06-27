@@ -101,7 +101,7 @@ func WithWriter(ctx context.Context, db *sql.DB, fn func(*sql.Conn) error) error
 // give up under a write-lock storm, and BUSY_SNAPSHOT (517) is not retried by
 // busy_timeout at all. Without retry a transient lock drops the terminal
 // outcome and strands the row in status='running' forever, with its OS process
-// already gone (2026-06-27 incident).
+// already gone.
 //
 // Each attempt is a complete, atomic BEGIN IMMEDIATE..COMMIT (or rollback), so
 // retrying is idempotent: a failed attempt left no partial state. Non-busy

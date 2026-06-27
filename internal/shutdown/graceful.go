@@ -229,9 +229,8 @@ func (c *Coordinator) drainLoop(ctx context.Context) {
 // in-flight, whereas a status='running' DB row WITHOUT one is stranded — its
 // process is already gone and its finalize never landed (e.g. a transient DB
 // lock during finalize left it stuck) — so waiting for it would hang shutdown
-// forever (the 2026-06-27 incident, where a graceful restart never converged
-// and had to be kill -9'd). Startup repair reclaims stranded rows as 'lost' on
-// the next boot.
+// forever (a graceful restart could never converge and would need a hard
+// kill). Startup repair reclaims stranded rows as 'lost' on the next boot.
 //
 // With no Killer wired (tests), it falls back to the DB snapshot and, as
 // before, never treats a transient listRunning error as completion.

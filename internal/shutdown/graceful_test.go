@@ -287,12 +287,12 @@ func TestCoordinatorWaitsForRunningToDrain(t *testing.T) {
 }
 
 // TestCoordinatorDoesNotWaitForStrandedRunningRow is the regression test for
-// the 2026-06-27 graceful-restart hang. A row left status='running' with NO
+// the graceful-restart hang. A row left status='running' with NO
 // live mission goroutine — its OS process already gone and its finalize never
 // landed (a transient DB lock during finalize) — must NOT block the drain
 // forever. Before the fix drainLoop waited until the DB 'running' count hit 0,
 // so the stranded row never cleared, SignalKill returned false every tick
-// ("kill signal not delivered"), and systemctl restart hung until kill -9.
+// ("kill signal not delivered"), and a graceful restart hung until a hard kill.
 // Now completion is decided by the in-memory live set, so the drain converges
 // and startup repair reclaims the row as 'lost' on the next boot.
 func TestCoordinatorDoesNotWaitForStrandedRunningRow(t *testing.T) {

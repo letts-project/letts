@@ -28,8 +28,8 @@ func TestOpenEnablesIncrementalAutoVacuum(t *testing.T) {
 	}
 }
 
-// TestNewConnInitDoesNotNeedWriteLock is the regression test for the
-// 2026-06-27 "database is locked" storm. Per-connection init must NOT acquire
+// TestNewConnInitDoesNotNeedWriteLock guards against a "database is locked"
+// storm. Per-connection init must NOT acquire
 // the write lock, so a connection opened to serve a READ can always come
 // online even while a writer holds the write lock. Before the fix the
 // connector ran auto_vacuum=INCREMENTAL and incremental_vacuum(1000) on every

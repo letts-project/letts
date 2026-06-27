@@ -21,8 +21,7 @@ import (
 // bare `PRAGMA incremental_vacuum` reclaims the entire freelist in a single
 // statement that holds the write lock for the whole sweep — after a large
 // mission cleanup that can be many seconds, long enough to push concurrent
-// writers past busy_timeout. That unbounded hold was a contributor to the
-// 2026-06-27 lock storm.
+// writers past busy_timeout and contribute to a write-lock storm.
 type Vacuumer struct {
 	DB       *sql.DB
 	Logger   *slog.Logger

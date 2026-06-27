@@ -445,8 +445,8 @@ func commitFinalize(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 	}
 	var missionGone bool
 	// WithWriterRetry: this is the single UPDATE that moves the row out of
-	// 'running' to 'done'. A transient lock here is exactly what stranded
-	// missions in the 2026-06-27 incident, so it must retry rather than fail.
+	// 'running' to 'done'. A transient lock here is exactly what would strand a
+	// mission in 'running' forever, so it must retry rather than fail.
 	if err := storage.WithWriterRetry(ctx, db, func(c *sql.Conn) error {
 		// Status guard: only 'running' (the normal in-flight state) and
 		// 'queued' (the queued-kill path commits terminal outcomes for rows
