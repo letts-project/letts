@@ -55,6 +55,11 @@ func KillQueued(ctx context.Context, dataDir string, db *sql.DB, m *storage.Miss
 	nowMs := time.Now().UnixMilli()
 	doneSeq := ew.LastSeq() + 1
 
+	failMessage, _ := killFailure(ExternalKillReason(failReason), 0, m.Lane)
+	if failMessage != "" {
+		failMessage += " before it started"
+	}
+
 	// time_finished (not "time").
 	// duration_ms is omitted because the mission never started.
 	doneFields := map[string]any{
@@ -62,6 +67,9 @@ func KillQueued(ctx context.Context, dataDir string, db *sql.DB, m *storage.Miss
 		"outcome":       "killed",
 		"exit_code":     int64(0),
 		"fail_reason":   failReason,
+	}
+	if failMessage != "" {
+		doneFields["fail_message"] = failMessage
 	}
 	full := map[string]any{}
 	for k, v := range doneFields {
@@ -79,6 +87,7 @@ func KillQueued(ctx context.Context, dataDir string, db *sql.DB, m *storage.Miss
 		Phase:         storage.PhasePrepared,
 		Outcome:       "killed",
 		FailReason:    sql.NullString{String: failReason, Valid: true},
+		FailMessage:   nullStr(failMessage),
 		ExitCode:      sql.NullInt64{Int64: 0, Valid: true},
 		Outputs:       []byte("[]"),
 		DoneSeq:       doneSeq,

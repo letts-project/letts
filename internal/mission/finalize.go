@@ -556,11 +556,29 @@ func commitFinalize(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 	metrics.ObserveMissionDone(kind, lane, intent.Outcome, duration)
 	// Structured INFO line so log-only observers see every terminal
 	// mission outcome (without polling /v1/events).
-	slog.Default().Info("mission", "phase", "finished",
+	attrs := []any{"phase", "finished",
 		"mission_id", intent.MissionID, "kind", kind, "lane", lane,
-		"outcome", intent.Outcome, "duration_ms", duration.Milliseconds())
+		"outcome", intent.Outcome, "duration_ms", duration.Milliseconds()}
+	if intent.Outcome != "success" {
+		if intent.FailReason.String != "" {
+			attrs = append(attrs, "fail_reason", intent.FailReason.String)
+		}
+		if intent.FailMessage.String != "" {
+			attrs = append(attrs, "fail_message", clipUTF8(intent.FailMessage.String, maxLoggedFailMessage))
+		}
+		if intent.ExitCode.Valid {
+			attrs = append(attrs, "exit_code", intent.ExitCode.Int64)
+		}
+		if intent.Signal.String != "" {
+			attrs = append(attrs, "signal", intent.Signal.String)
+		}
+	}
+	slog.Default().Info("mission", attrs...)
 	return nil
 }
+
+// maxLoggedFailMessage caps fail_message in the "mission phase=finished" log line.
+const maxLoggedFailMessage = 512
 
 // revertFailedCommit converts a partially-committed intent into a durable
 // failed outcome and finalizes via the fast path. The done_event in the
@@ -750,14 +768,22 @@ func doneEventTimeFinished(fields map[string]any) int64 {
 
 // capOutcome enforces size truncation rules on return/fail_message/
 // fail_details. Oversize return drops the return and switches outcome to
-// failed/return_too_large. Oversize fail_message truncates with a suffix.
-// Oversize fail_details replaces with the truncated marker.
+// failed/return_too_large with a message and details stating both sizes.
+// Oversize fail_message is cut at a UTF-8 boundary and gets a suffix, within
+// the limit. Oversize fail_details is replaced with the truncated marker
+// carrying the original size.
 func capOutcome(o OutcomeResult, cfg FinalizeConfig) OutcomeResult {
 	out := o
 
-	if cfg.MaxReturnValue > 0 && int64(len(out.Return)) > cfg.MaxReturnValue {
+	if n := int64(len(out.Return)); cfg.MaxReturnValue > 0 && n > cfg.MaxReturnValue {
 		out.Outcome = "failed"
 		out.FailReason = "return_too_large"
+		out.FailMessage = fmt.Sprintf("success return value is %d bytes, exceeds max_return_value_size (%d bytes); return less data or write it to an output file",
+			n, cfg.MaxReturnValue)
+		out.FailDetails, _ = json.Marshal(struct {
+			ReturnBytes        int64 `json:"return_bytes"`
+			MaxReturnValueSize int64 `json:"max_return_value_size"`
+		}{n, cfg.MaxReturnValue})
 		out.Return = nil
 		out.DropReturn = true
 	}
@@ -767,15 +793,15 @@ func capOutcome(o OutcomeResult, cfg FinalizeConfig) OutcomeResult {
 
 	if cfg.MaxFailMessage > 0 && int64(len(out.FailMessage)) > cfg.MaxFailMessage {
 		const suffix = "…[truncated]"
-		head := cfg.MaxFailMessage - int64(len(suffix))
-		if head < 0 {
-			head = 0
+		if cfg.MaxFailMessage >= int64(len(suffix)) {
+			out.FailMessage = clipUTF8(out.FailMessage, int(cfg.MaxFailMessage)-len(suffix)) + suffix
+		} else {
+			out.FailMessage = clipUTF8(out.FailMessage, int(cfg.MaxFailMessage))
 		}
-		out.FailMessage = out.FailMessage[:head] + suffix
 	}
 
 	if cfg.MaxFailDetails > 0 && int64(len(out.FailDetails)) > cfg.MaxFailDetails {
-		out.FailDetails = json.RawMessage(`{"truncated":true,"reason":"fail_details_too_large"}`)
+		out.FailDetails = json.RawMessage(fmt.Sprintf(`{"truncated":true,"reason":"fail_details_too_large","original_bytes":%d}`, len(out.FailDetails)))
 	}
 
 	return out

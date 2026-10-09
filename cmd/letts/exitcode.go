@@ -70,13 +70,47 @@ type WaitTimeoutError struct{}
 func (e *WaitTimeoutError) Error() string { return "client wait timeout" }
 func NewWaitTimeoutError() error          { return &WaitTimeoutError{} }
 
-type MissionAbnormalError struct{ Outcome string }
+// MissionAbnormalError is a done event whose outcome is neither success nor
+// failed. Reason and Message are its fail_reason and fail_message.
+type MissionAbnormalError struct {
+	Outcome string
+	Reason  string
+	Message string
+}
 
 func (e *MissionAbnormalError) Error() string {
-	return "mission did not exit normally: " + e.Outcome
+	label := e.Outcome
+	if e.Reason != "" {
+		label += "/" + e.Reason
+	}
+	return joinFailureText("mission did not exit normally", label, e.Message)
 }
 func NewMissionAbnormalError(outcome string) error {
 	return &MissionAbnormalError{Outcome: outcome}
+}
+
+// missionFailedError is the error for a done event with outcome=failed. Its
+// text starts with "mission failed" and names reason (unless it is the
+// generic "explicit") and message.
+func missionFailedError(reason, message string) error {
+	if reason == "explicit" {
+		reason = ""
+	}
+	if reason == "" && message == "" {
+		message = "(no message)"
+	}
+	return errors.New(joinFailureText("mission failed", reason, message))
+}
+
+// joinFailureText joins the non-empty parts with ": ".
+func joinFailureText(parts ...string) string {
+	var kept []string
+	for _, p := range parts {
+		if p != "" {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, ": ")
 }
 
 func mapErrorToExit(err error) int {

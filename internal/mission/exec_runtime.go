@@ -191,7 +191,8 @@ func extractExecResult(ps *os.ProcessState) (exitCode int, sig syscall.Signal, o
 func DeriveExecOutcome(exitCode int, signal syscall.Signal, timedOut bool) OutcomeResult {
 	switch {
 	case timedOut:
-		return OutcomeResult{Outcome: "timeout", FailReason: "timeout", ExitCode: exitCode}
+		msg, details := killFailure(KillTimeout, 0, "")
+		return OutcomeResult{Outcome: "timeout", FailReason: "timeout", FailMessage: msg, FailDetails: details, ExitCode: exitCode}
 	case signal != 0:
 		return OutcomeResult{
 			Outcome:     "killed",
@@ -454,18 +455,19 @@ func runExec(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *stor
 	if sig != 0 {
 		sigStr = sigName(sig)
 	}
+	killMsg, killDetails := killFailure(finalKill, m.TimeoutMs.Int64, m.Lane)
 	var o OutcomeResult
 	switch {
 	case finalKill == KillTimeout:
-		o = OutcomeResult{Outcome: "timeout", FailReason: "timeout", ExitCode: exitCode, Signal: sigStr}
+		o = OutcomeResult{Outcome: "timeout", FailReason: "timeout", FailMessage: killMsg, FailDetails: killDetails, ExitCode: exitCode, Signal: sigStr}
 	case finalKill == KillForceDelete:
-		o = OutcomeResult{Outcome: "killed", FailReason: "force_delete", ExitCode: exitCode, Signal: sigStr}
+		o = OutcomeResult{Outcome: "killed", FailReason: "force_delete", FailMessage: killMsg, ExitCode: exitCode, Signal: sigStr}
 	case finalKill == KillLaneRemoved:
-		o = OutcomeResult{Outcome: "killed", FailReason: "lane_removed", ExitCode: exitCode, Signal: sigStr}
+		o = OutcomeResult{Outcome: "killed", FailReason: "lane_removed", FailMessage: killMsg, ExitCode: exitCode, Signal: sigStr}
 	case finalKill == KillDugdaleShutdown:
-		o = OutcomeResult{Outcome: "killed", FailReason: "dugdale_shutdown", ExitCode: exitCode, Signal: sigStr}
+		o = OutcomeResult{Outcome: "killed", FailReason: "dugdale_shutdown", FailMessage: killMsg, ExitCode: exitCode, Signal: sigStr}
 	case finalKill == KillByAPI:
-		o = OutcomeResult{Outcome: "killed", FailReason: "killed_by_api", ExitCode: exitCode, Signal: sigStr}
+		o = OutcomeResult{Outcome: "killed", FailReason: "killed_by_api", FailMessage: killMsg, ExitCode: exitCode, Signal: sigStr}
 	case !stateOK:
 		// cmd.ProcessState was nil after Wait() — a Go-runtime
 		// edge with no reliable exit info. Mark crashed with a specific

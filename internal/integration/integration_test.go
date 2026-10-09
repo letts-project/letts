@@ -241,6 +241,21 @@ exit 0
 		t.Errorf("outcome=%q reason=%q, want failed/event_line_too_large",
 			m.Outcome.String, m.FailReason.String)
 	}
+	wantMsg := "fd3 line 1 is 4096 bytes, exceeds max_event_line_size (1024 bytes)"
+	if m.FailMessage.String != wantMsg {
+		t.Errorf("fail_message=%q, want %q", m.FailMessage.String, wantMsg)
+	}
+	var details struct {
+		Fd3Line          int64 `json:"fd3_line"`
+		LineBytes        int64 `json:"line_bytes"`
+		MaxEventLineSize int64 `json:"max_event_line_size"`
+	}
+	if err := json.Unmarshal([]byte(m.FailDetails.String), &details); err != nil {
+		t.Fatalf("fail_details %q: %v", m.FailDetails.String, err)
+	}
+	if details.Fd3Line != 1 || details.LineBytes != 4096 || details.MaxEventLineSize != 1024 {
+		t.Errorf("fail_details=%s, want fd3_line=1 line_bytes=4096 max_event_line_size=1024", m.FailDetails.String)
+	}
 }
 
 // ============================================================================

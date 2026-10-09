@@ -2,10 +2,12 @@ package repair_test
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -33,6 +35,60 @@ func TestSweepRunningToLostFinalizesAll(t *testing.T) {
 		if m.Status != storage.StatusDone || m.Outcome.String != "lost" {
 			t.Errorf("mission %s: status=%q outcome=%q", id, m.Status, m.Outcome.String)
 		}
+		if m.FailReason.Valid {
+			t.Errorf("mission %s: fail_reason=%q, want NULL", id, m.FailReason.String)
+		}
+		if want := "dugdale restarted while the mission was running"; m.FailMessage.String != want {
+			t.Errorf("mission %s: fail_message=%q, want %q", id, m.FailMessage.String, want)
+		}
+	}
+}
+
+func setRunningProcess(t *testing.T, db *sql.DB, id string, pid, pgid, starttime int64) {
+	t.Helper()
+	if _, err := db.Exec(`UPDATE missions SET pid=?, pgid=?, proc_starttime=? WHERE mission_id=?`,
+		pid, pgid, starttime, id); err != nil {
+		t.Fatalf("set pid: %v", err)
+	}
+}
+
+func TestSweepRunningToLostMessageNamesPid(t *testing.T) {
+	identityMsg := "dugdale restarted while the mission was running (pid 99999999)"
+	if runtime.GOOS == "linux" {
+		identityMsg += "; the process was already gone"
+	}
+	cases := []struct {
+		name      string
+		pid, pgid int64
+		starttime int64
+		want      string
+	}{
+		{"spawn not recorded yet", 0, 0, 0,
+			"dugdale restarted while the mission was running"},
+		{"pid without process identity", 4242, 4242, 0,
+			"dugdale restarted while the mission was running (pid 4242)"},
+		{"process identity recorded", 99999999, 99999999, 12345, identityMsg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db := setupRepairDB(t)
+			dataDir := t.TempDir()
+			cfg := repairCfg(dataDir)
+			id, parentDir := repairFixture(t, db, dataDir)
+			setRunningProcess(t, db, id, tc.pid, tc.pgid, tc.starttime)
+
+			if err := repair.SweepRunningToLost(context.Background(), cfg, db, slog.Default()); err != nil {
+				t.Fatalf("sweep: %v", err)
+			}
+			m, _ := storage.GetMission(context.Background(), db, id)
+			if m.Outcome.String != "lost" || m.FailMessage.String != tc.want {
+				t.Errorf("outcome=%q fail_message=%q, want lost/%q", m.Outcome.String, m.FailMessage.String, tc.want)
+			}
+			events := loadEventsRepair(t, parentDir, id)
+			if last := events[len(events)-1]; last["fail_message"] != tc.want {
+				t.Errorf("done fail_message=%v, want %q", last["fail_message"], tc.want)
+			}
+		})
 	}
 }
 

@@ -128,6 +128,10 @@ func TestKillQueuedFinalizesAsKilledByAPI(t *testing.T) {
 	if got.Outcome.String != "killed" || got.FailReason.String != "killed_by_api" {
 		t.Errorf("Outcome=%q FailReason=%q", got.Outcome.String, got.FailReason.String)
 	}
+	const wantMsg = "killed via the kill API before it started"
+	if got.FailMessage.String != wantMsg {
+		t.Errorf("FailMessage=%q, want %q", got.FailMessage.String, wantMsg)
+	}
 
 	// Events file must have terminal done event.
 	shard, _ := ids.ShardPath(id)
@@ -141,6 +145,9 @@ func TestKillQueuedFinalizesAsKilledByAPI(t *testing.T) {
 	}
 	if !strings.Contains(string(b), `"outcome":"killed"`) {
 		t.Errorf("done missing killed outcome: %s", string(b))
+	}
+	if !strings.Contains(string(b), `"fail_message":"`+wantMsg+`"`) {
+		t.Errorf("done missing fail_message: %s", string(b))
 	}
 
 	// Intent should be deleted.

@@ -3,12 +3,16 @@
 package repair_test
 
 import (
+	"context"
+	"fmt"
+	"log/slog"
 	"os/exec"
 	"syscall"
 	"testing"
 	"time"
 
 	"letts/internal/repair"
+	"letts/internal/storage"
 )
 
 // readProcStarttime is duplicated from the linux variant to read the spawned
@@ -122,5 +126,37 @@ func TestBestEffortKillPgidLinuxIdentityMismatch(t *testing.T) {
 	// Process should still be alive.
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Errorf("process unexpectedly dead: %v", err)
+	}
+}
+
+func TestSweepRunningToLostMessageReportsKilledGroup(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Skipf("can't spawn sleep: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill() }()
+	waitDone := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(waitDone) }()
+	pid := cmd.Process.Pid
+	starttime := readProcStarttimeForTest(t, pid)
+
+	db := setupRepairDB(t)
+	dataDir := t.TempDir()
+	id, _ := repairFixture(t, db, dataDir)
+	setRunningProcess(t, db, id, int64(pid), int64(pid), starttime)
+
+	if err := repair.SweepRunningToLost(context.Background(), repairCfg(dataDir), db, slog.Default()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	m, _ := storage.GetMission(context.Background(), db, id)
+	want := fmt.Sprintf("dugdale restarted while the mission was running (pid %d); leftover process group was killed", pid)
+	if m.FailMessage.String != want {
+		t.Errorf("fail_message=%q, want %q", m.FailMessage.String, want)
+	}
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("leftover process not killed")
 	}
 }

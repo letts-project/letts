@@ -325,7 +325,7 @@ func TestDeriveExecOutcome(t *testing.T) {
 		{
 			"timeout wins",
 			-1, syscall.SIGKILL, true,
-			OutcomeResult{Outcome: "timeout", FailReason: "timeout", ExitCode: -1},
+			OutcomeResult{Outcome: "timeout", FailReason: "timeout", FailMessage: "mission exceeded its timeout and was killed", ExitCode: -1},
 		},
 		{
 			"signal without timeout",
@@ -588,6 +588,77 @@ func TestSpawnExecKillByAPIWins(t *testing.T) {
 	got := loadMission(t, db, id)
 	if got.Outcome.String != "killed" || got.FailReason.String != "killed_by_api" {
 		t.Errorf("outcome=%q reason=%q want killed/killed_by_api", got.Outcome.String, got.FailReason.String)
+	}
+	if want := "killed via the kill API"; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q want %q", got.FailMessage.String, want)
+	}
+}
+
+func TestSpawnExecExternalKillMessages(t *testing.T) {
+	cases := []struct {
+		reason  ExternalKillReason
+		wantMsg string
+	}{
+		{KillForceDelete, "killed because the mission was force-deleted"},
+		{KillLaneRemoved, `killed because lane "ops" was removed from the config`},
+		{KillDugdaleShutdown, "killed because dugdale was shutting down"},
+	}
+	for _, tc := range cases {
+		t.Run(string(tc.reason), func(t *testing.T) {
+			db := openTestDB(t)
+			cfg := execRuntimeCfg(t)
+			id := insertExecMission(t, db, "ops", execPayload{
+				Lane:    "ops",
+				Command: []string{"sh", "-c", "sleep 30"},
+			}, 0)
+			m, _ := storage.GetMission(context.Background(), db, id)
+
+			killCh := make(chan ExternalKillReason, 1)
+			done := make(chan error, 1)
+			go func() { done <- Run(context.Background(), cfg, db, m, killCh, func() {}) }()
+
+			time.Sleep(50 * time.Millisecond)
+			killCh <- tc.reason
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Run did not return after kill")
+			}
+			got := loadMission(t, db, id)
+			if got.Outcome.String != "killed" || got.FailReason.String != string(tc.reason) {
+				t.Errorf("outcome=%q reason=%q want killed/%s", got.Outcome.String, got.FailReason.String, tc.reason)
+			}
+			if got.FailMessage.String != tc.wantMsg {
+				t.Errorf("FailMessage=%q want %q", got.FailMessage.String, tc.wantMsg)
+			}
+		})
+	}
+}
+
+func TestSpawnExecTimeoutMessage(t *testing.T) {
+	db := openTestDB(t)
+	cfg := execRuntimeCfg(t)
+	id := insertExecMission(t, db, "normal", execPayload{
+		Lane:    "normal",
+		Command: []string{"sh", "-c", "sleep 30"},
+	}, 200)
+	m, _ := storage.GetMission(context.Background(), db, id)
+	if err := Run(context.Background(), cfg, db, m, make(chan ExternalKillReason, 1), func() {}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := loadMission(t, db, id)
+	if got.Outcome.String != "timeout" || got.FailReason.String != "timeout" {
+		t.Errorf("outcome=%q reason=%q want timeout/timeout", got.Outcome.String, got.FailReason.String)
+	}
+	if want := "mission exceeded its timeout of 200ms and was killed"; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q want %q", got.FailMessage.String, want)
+	}
+	if got.FailDetails.String != `{"timeout_ms":200}` {
+		t.Errorf("FailDetails=%s", got.FailDetails.String)
 	}
 }
 

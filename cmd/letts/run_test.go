@@ -157,12 +157,73 @@ func TestRunMissionFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for failed outcome")
 	}
-	if !strings.Contains(err.Error(), "mission failed") {
-		t.Errorf("error = %q, want contains 'mission failed'", err.Error())
+	if err.Error() != "mission failed: boom" {
+		t.Errorf("error = %q, want %q", err.Error(), "mission failed: boom")
 	}
 	// Must not map to one of the typed-error exit codes; falls through to 1.
 	if got := mapErrorToExit(err); got != exitFailure {
 		t.Errorf("exit code = %d, want %d", got, exitFailure)
+	}
+}
+
+// TestRunMissionFailedErrorIncludesReasonAndMessage: a daemon-classified
+// failure surfaces both fail_reason and fail_message in the error text.
+func TestRunMissionFailedErrorIncludesReasonAndMessage(t *testing.T) {
+	rs := newRunStub(t)
+	defer rs.close()
+	rs.eventsHandler = func(w http.ResponseWriter, r *http.Request) {
+		writeNDJSON(w,
+			`{"seq":1,"event":"queued"}`,
+			`{"seq":2,"event":"done","outcome":"failed","exit_code":0,"fail_reason":"event_line_too_large","fail_message":"fd3 success event (line 1) is 1200000 bytes, exceeds max_event_line_size (1048576 bytes)"}`,
+		)
+	}
+	ac := stubRunAppCtx(t, rs)
+
+	cmd := newRunCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetContext(context.Background())
+
+	err := runCore(cmd, ac, &runFlags{route: "normal", mission: "M"}, FormatText)
+	want := "mission failed: event_line_too_large: fd3 success event (line 1) is 1200000 bytes, exceeds max_event_line_size (1048576 bytes)"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v\nwant    %s", err, want)
+	}
+	if got := mapErrorToExit(err); got != exitFailure {
+		t.Errorf("exit code = %d, want %d", got, exitFailure)
+	}
+}
+
+// TestRunMissionAbnormalErrorIncludesReasonAndMessage: an abnormal outcome
+// carries fail_reason and fail_message into MissionAbnormalError.
+func TestRunMissionAbnormalErrorIncludesReasonAndMessage(t *testing.T) {
+	rs := newRunStub(t)
+	defer rs.close()
+	rs.eventsHandler = func(w http.ResponseWriter, r *http.Request) {
+		writeNDJSON(w, `{"seq":1,"event":"done","outcome":"killed","signal":"TERM","fail_reason":"killed_by_api","fail_message":"killed via the kill API"}`)
+	}
+	ac := stubRunAppCtx(t, rs)
+
+	cmd := newRunCmd()
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetContext(context.Background())
+
+	err := runCore(cmd, ac, &runFlags{route: "normal", mission: "M"}, FormatText)
+	var ma *MissionAbnormalError
+	if !errors.As(err, &ma) {
+		t.Fatalf("got %T %v, want MissionAbnormalError", err, err)
+	}
+	if ma.Outcome != "killed" || ma.Reason != "killed_by_api" || ma.Message != "killed via the kill API" {
+		t.Errorf("MissionAbnormalError=%+v", *ma)
+	}
+	if want := "mission did not exit normally: killed/killed_by_api: killed via the kill API"; err.Error() != want {
+		t.Errorf("error = %q, want %q", err.Error(), want)
+	}
+	if got := mapErrorToExit(err); got != exitMissionAbnormal {
+		t.Errorf("exit code = %d, want %d", got, exitMissionAbnormal)
 	}
 }
 

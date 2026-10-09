@@ -3,6 +3,7 @@ package repair
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -69,11 +70,21 @@ func SweepRunningToLost(ctx context.Context, cfg *config.DugdaleConfig, db *sql.
 	}
 
 	for _, r := range pending {
+		msg := "dugdale restarted while the mission was running"
+		if r.PID.Int64 > 0 {
+			msg += fmt.Sprintf(" (pid %d)", r.PID.Int64)
+		}
 		if r.PID.Valid && r.PGID.Valid && r.ProcStarttime.Valid {
 			killed := BestEffortKillPgid(int(r.PID.Int64), int(r.PGID.Int64), r.ProcStarttime.Int64)
 			if killed {
 				logger.Info("repair: killed leftover process group",
 					"mission_id", r.ID, "pid", r.PID.Int64, "pgid", r.PGID.Int64)
+			}
+			switch {
+			case killed:
+				msg += "; leftover process group was killed"
+			case canCheckProcessIdentity && r.PID.Int64 > 0 && r.PGID.Int64 > 0 && r.ProcStarttime.Int64 != 0:
+				msg += "; the process was already gone"
 			}
 		}
 
@@ -86,7 +97,7 @@ func SweepRunningToLost(ctx context.Context, cfg *config.DugdaleConfig, db *sql.
 		// For timeout/lost outcomes fail_reason stays NULL.
 		// Leave FailReason empty so clients filtering by fail_reason see the
 		// expected absence rather than the redundant "lost" string.
-		o := mission.OutcomeResult{Outcome: "lost", ExitCode: 0}
+		o := mission.OutcomeResult{Outcome: "lost", FailMessage: msg, ExitCode: 0}
 		if err := mission.Finalize(ctx, db, mission.FinalizeInputs{
 			MissionID:     r.ID,
 			Kind:          r.Kind,

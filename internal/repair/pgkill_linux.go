@@ -10,6 +10,10 @@ import (
 	"syscall"
 )
 
+// canCheckProcessIdentity reports whether a false platformKillPgid result
+// means the recorded process no longer exists.
+const canCheckProcessIdentity = true
+
 func platformKillPgid(pid, pgid int, expectedStarttime int64) bool {
 	actual := readProcStarttime(pid)
 	if actual == 0 || actual != expectedStarttime {

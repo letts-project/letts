@@ -1,12 +1,15 @@
 package mission
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func pipePair(t *testing.T) (*os.File, *os.File) {
@@ -27,14 +30,18 @@ func collectProgress(ch <-chan ProgressEvent) []ProgressEvent {
 }
 
 func hasViolation(state *Fd3State, name string) bool {
+	return firstViolation(state, name) != nil
+}
+
+func firstViolation(state *Fd3State, reason string) *Fd3Violation {
 	state.mu.Lock()
 	defer state.mu.Unlock()
-	for _, v := range state.Violations {
-		if v == name {
-			return true
+	for i := range state.Violations {
+		if state.Violations[i].Reason == reason {
+			return &state.Violations[i]
 		}
 	}
-	return false
+	return nil
 }
 
 func TestReadFd3SingleProgress(t *testing.T) {
@@ -427,5 +434,246 @@ func TestReadFd3ContextCancelExitsCleanly(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("ReadFd3 didn't return after cancel and EOF")
+	}
+}
+
+func TestReadFd3OversizedSuccessLineDiagnostics(t *testing.T) {
+	big := `{"event":"success","return":{"files":"` + strings.Repeat("x", 200*1024) + `"}}`
+	r := strings.NewReader(`{"event":"progress","value":0.1}` + "\n" + big + "\n")
+	state := &Fd3State{}
+	ReadFd3(context.Background(), r, Fd3Limits{MaxEventLineSize: 1024}, make(chan ProgressEvent, 4), state)
+
+	v := firstViolation(state, "event_line_too_large")
+	if v == nil {
+		t.Fatalf("violations=%v, want event_line_too_large", state.Violations)
+	}
+	wantMsg := fmt.Sprintf("fd3 success event (line 2) is %d bytes, exceeds max_event_line_size (1024 bytes); return less data or write it to an output file", len(big))
+	if v.Message != wantMsg {
+		t.Errorf("Message=%q\nwant    %q", v.Message, wantMsg)
+	}
+	wantDetails := fmt.Sprintf(`{"fd3_line":2,"line_bytes":%d,"max_event_line_size":1024,"event":"success"}`, len(big))
+	if string(v.Details) != wantDetails {
+		t.Errorf("Details=%s\nwant    %s", v.Details, wantDetails)
+	}
+}
+
+func TestReadFd3OversizedGarbageLineOmitsKind(t *testing.T) {
+	big := strings.Repeat("y", 100*1024)
+	r := strings.NewReader("\n\n" + big + "\n")
+	state := &Fd3State{}
+	ReadFd3(context.Background(), r, Fd3Limits{MaxEventLineSize: 1024}, make(chan ProgressEvent, 4), state)
+
+	v := firstViolation(state, "event_line_too_large")
+	if v == nil {
+		t.Fatalf("violations=%v, want event_line_too_large", state.Violations)
+	}
+	wantMsg := fmt.Sprintf("fd3 line 3 is %d bytes, exceeds max_event_line_size (1024 bytes)", len(big))
+	if v.Message != wantMsg {
+		t.Errorf("Message=%q\nwant    %q", v.Message, wantMsg)
+	}
+	wantDetails := fmt.Sprintf(`{"fd3_line":3,"line_bytes":%d,"max_event_line_size":1024}`, len(big))
+	if string(v.Details) != wantDetails {
+		t.Errorf("Details=%s\nwant    %s", v.Details, wantDetails)
+	}
+}
+
+func TestReadLineBoundedCountsAndCopiesHead(t *testing.T) {
+	a := strings.Repeat("A", 150*1024)
+	b := strings.Repeat("B", 150*1024)
+	br := bufio.NewReaderSize(strings.NewReader(a+"\n"+b+"\n"), 64*1024)
+
+	first := readLineBounded(br, 1024)
+	if !first.oversized || first.data != nil {
+		t.Fatalf("first: oversized=%v len(data)=%d, want oversized with nil data", first.oversized, len(first.data))
+	}
+	if first.size != int64(len(a)) {
+		t.Errorf("first.size=%d, want %d", first.size, len(a))
+	}
+	if string(first.head) != a[:oversizedHeadBytes] {
+		t.Errorf("first.head=%q, want %d A's", first.head, oversizedHeadBytes)
+	}
+
+	second := readLineBounded(br, 1024)
+	if second.size != int64(len(b)) {
+		t.Errorf("second.size=%d, want %d", second.size, len(b))
+	}
+	if string(first.head) != a[:oversizedHeadBytes] {
+		t.Error("first.head changed after the next read; it must not alias the bufio buffer")
+	}
+
+	small := readLineBounded(bufio.NewReader(strings.NewReader("abc\n")), 1024)
+	if small.oversized || string(small.data) != "abc" || small.size != 3 || small.head != nil {
+		t.Errorf("small line: %+v", small)
+	}
+}
+
+func TestSniffEventKind(t *testing.T) {
+	cases := []struct {
+		head string
+		want string
+	}{
+		{`{"event":"success","return":{"files":[{"path":"/a`, "success"},
+		{`{"return":{"a":[1,{"b":2}]},"event":"fail","message":"x`, "fail"},
+		{`  {"event":"progress"`, "progress"},
+		{`{"event":"output_file","key":"k"}`, "output_file"},
+		{`{"event":"weird","return":1}`, ""},
+		{`{"event":5}`, ""},
+		{`{"event":"succ`, ""},
+		{`{"return":"` + strings.Repeat("z", 600), ""},
+		{`["event","success"]`, ""},
+		{`definitely not json`, ""},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := sniffEventKind([]byte(tc.head)); got != tc.want {
+			t.Errorf("sniffEventKind(%q)=%q, want %q", tc.head, got, tc.want)
+		}
+	}
+}
+
+func TestReadFd3ViolationMessages(t *testing.T) {
+	cases := []struct {
+		name        string
+		input       string
+		limits      Fd3Limits
+		reason      string
+		wantMsg     string
+		wantDetails string
+	}{
+		{
+			name:        "invalid json",
+			input:       "notjson",
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 line 1 is not valid JSON: invalid character 'o' in literal null (expecting 'u'); line starts with "notjson"`,
+			wantDetails: `{"fd3_line":1}`,
+		},
+		{
+			name:        "not an object",
+			input:       `[1,2]`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 line 1 does not match the event schema: expected a JSON object, got array`,
+			wantDetails: `{"fd3_line":1}`,
+		},
+		{
+			name:        "event not a string",
+			input:       `{"event":5}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 line 1 does not match the event schema: field "event" must be string, got number`,
+			wantDetails: `{"fd3_line":1}`,
+		},
+		{
+			name:        "missing event",
+			input:       `{"foo":1}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 line 1 has a missing or empty "event" field`,
+			wantDetails: `{"fd3_line":1}`,
+		},
+		{
+			name:        "unknown event",
+			input:       `{"event":"weird"}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 line 1 has unknown event "weird" (want progress, output_file, success or fail)`,
+			wantDetails: `{"fd3_line":1}`,
+		},
+		{
+			name:        "progress schema",
+			input:       `{"event":"progress","value":"half"}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 progress event (line 1) does not match the schema: field "value" must be float64, got string`,
+			wantDetails: `{"fd3_line":1,"event":"progress"}`,
+		},
+		{
+			name:        "output_file schema",
+			input:       `{"event":"output_file","key":5}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 output_file event (line 1) does not match the schema: field "key" must be string, got number`,
+			wantDetails: `{"fd3_line":1,"event":"output_file"}`,
+		},
+		{
+			name:        "output_file invalid key",
+			input:       `{"event":"output_file","key":"a/b"}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 output_file event (line 1): invalid role/key "a/b" (regex ^[A-Za-z_][A-Za-z0-9_]{0,63}$)`,
+			wantDetails: `{"fd3_line":1,"event":"output_file","key":"a/b"}`,
+		},
+		{
+			name:        "success return not an object",
+			input:       `{"event":"success","return":[1,2,3]}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 success event (line 1): "return" must be a JSON object or null, got array`,
+			wantDetails: `{"fd3_line":1,"event":"success"}`,
+		},
+		{
+			name:        "fail schema",
+			input:       `{"event":"fail","message":"x","exit_code":"abc"}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 fail event (line 1) does not match the schema: field "exit_code" must be int, got string`,
+			wantDetails: `{"fd3_line":1,"event":"fail"}`,
+		},
+		{
+			name:        "fail details not an object",
+			input:       `{"event":"fail","message":"x","details":"oops"}`,
+			reason:      "event_protocol_error",
+			wantMsg:     `fd3 fail event (line 1): "details" must be a JSON object or null, got string`,
+			wantDetails: `{"fd3_line":1,"event":"fail"}`,
+		},
+		{
+			name:        "too many output files",
+			input:       `{"event":"output_file","key":"a"}` + "\n" + `{"event":"output_file","key":"b"}`,
+			limits:      Fd3Limits{MaxOutputFilesPerMsn: 1},
+			reason:      "too_many_output_files",
+			wantMsg:     `fd3 output_file event (line 2) declares key "b" beyond max_output_files_per_mission (1)`,
+			wantDetails: `{"fd3_line":2,"event":"output_file","key":"b","max_output_files_per_mission":1}`,
+		},
+		{
+			name:        "duplicate final event",
+			input:       `{"event":"success"}` + "\n" + `{"event":"progress"}` + "\n" + `{"event":"fail","message":"x"}`,
+			reason:      "duplicate_final_event",
+			wantMsg:     `fd3 fail event (line 3) is a second final event after the success event on line 1`,
+			wantDetails: `{"fd3_line":3,"event":"fail","first_event":"success","first_fd3_line":1}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state := &Fd3State{}
+			ReadFd3(context.Background(), strings.NewReader(tc.input+"\n"), tc.limits, make(chan ProgressEvent, 4), state)
+			v := firstViolation(state, tc.reason)
+			if v == nil {
+				t.Fatalf("violations=%v, want %s", state.Violations, tc.reason)
+			}
+			if v.Message != tc.wantMsg {
+				t.Errorf("Message=%q\nwant    %q", v.Message, tc.wantMsg)
+			}
+			if string(v.Details) != tc.wantDetails {
+				t.Errorf("Details=%s\nwant    %s", v.Details, tc.wantDetails)
+			}
+		})
+	}
+}
+
+func TestReadFd3ViolationMessagesBoundedForHugeInput(t *testing.T) {
+	hugeCyr := strings.Repeat("й", 50*1024)
+	cases := []string{
+		`{"event":"output_file","key":"` + hugeCyr + `"}`,
+		`{"event":"output_file","key":"a` + strings.Repeat("\\n", 4096) + `"}`,
+		`{"event":"` + hugeCyr + `"}`,
+		`{"event":"fail","exit_code":1` + strings.Repeat("0", 100*1024) + `.5}`,
+		"\xff\xfe" + strings.Repeat("я", 40*1024),
+		`{"event":"progress","value":1}` + strings.Repeat("\x01", 10*1024),
+	}
+	for i, raw := range cases {
+		state := &Fd3State{}
+		ReadFd3(context.Background(), strings.NewReader(raw+"\n"),
+			Fd3Limits{MaxOutputFilesPerMsn: 4}, make(chan ProgressEvent, 4), state)
+		if len(state.Violations) != 1 {
+			t.Fatalf("case %d: violations=%d, want 1", i, len(state.Violations))
+		}
+		v := state.Violations[0]
+		if v.Message == "" || len(v.Message) > 1024 || strings.ContainsAny(v.Message, "\n\r") || !utf8.ValidString(v.Message) {
+			t.Errorf("case %d: unbounded or multi-line message (%d bytes): %q", i, len(v.Message), v.Message)
+		}
+		if len(v.Details) > 1024 || !json.Valid(v.Details) {
+			t.Errorf("case %d: details (%d bytes) not bounded valid JSON: %s", i, len(v.Details), v.Details)
+		}
 	}
 }

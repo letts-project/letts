@@ -400,8 +400,8 @@ suffix (1024-based). For several fields a value of `0` means *no cap*.
 |-----|---------|---------|
 | `max_output_buffer` | `16MiB` | Combined byte budget shared by a mission's stdout, stderr, and combined capture. |
 | `max_events_buffer` | `1MiB` | Cap on buffered progress events. |
-| `max_event_line_size` | `1MiB` | Maximum size of a single events-file line (`0` = unlimited). |
-| `max_return_value_size` | `768KiB` | Maximum size of a mission's `return` payload. |
+| `max_event_line_size` | `1MiB` | Maximum size of a single fd3 or events-file line (`0` = unlimited); an oversized fd3 line fails the mission with `event_line_too_large`. |
+| `max_return_value_size` | `768KiB` | Maximum size of a mission's `return` payload; a larger one fails the mission with `return_too_large`. |
 | `max_fail_message_size` | `64KiB` | Maximum size of a failure message. |
 | `max_fail_details_size` | `256KiB` | Maximum size of a failure details object. |
 | `max_dispatch_body_size` | `2MiB` | Body cap for `POST /v1/dispatch`. |
@@ -427,6 +427,22 @@ As a consistency guard, when `max_event_line_size > 0` the daemon refuses to sta
 the per-field caps leave room for the terminal `done` event envelope (otherwise a
 successful mission could produce a `done` event too large to write, and the mission would
 never finalize).
+
+A mission that hits a limit, or any other failure the daemon classifies itself, gets a
+human-readable `fail_message` stating what happened and the numbers involved, for example
+`fd3 success event (line 1) is 1843200 bytes, exceeds max_event_line_size (1048576 bytes);
+return less data or write it to an output file`. Where numbers help, `fail_details` holds a
+daemon-shaped object:
+
+| Failure | `fail_details` |
+|---------|----------------|
+| `event_line_too_large` | `{fd3_line, line_bytes, max_event_line_size, event?}` |
+| `return_too_large` | `{return_bytes, max_return_value_size}` |
+| `too_many_output_files` | `{fd3_line, event, key, max_output_files_per_mission}` |
+| `timeout` | `{timeout_ms}` |
+
+`event` is the event kind read from the start of the oversized line; it is diagnostic only
+and never changes the classification. Large data belongs in output files, not in `return`.
 
 **`mission_env`** — environment passed to mission processes.
 
@@ -693,6 +709,10 @@ The CLI maps typed errors to a stable set of exit codes:
 | `125` | Abnormal mission outcome (`killed`, `timeout`, `oom`, `crashed`, `lost`, or no terminal event). |
 | `255` | Exec transport error before any terminal outcome. |
 
+For `run`, the error line names the cause: `mission failed: <fail_reason>: <fail_message>`
+for a `failed` outcome (the generic `explicit` reason is omitted), and
+`mission did not exit normally: <outcome>[/<fail_reason>]: <fail_message>` for code `125`.
+
 For `exec`, a successful remote command's own exit code is propagated verbatim (so a
 child exiting `7` makes `letts exec` exit `7`), except that the reserved codes `124`,
 `125`, and `255` collapse to `125` to keep their meaning unambiguous.
@@ -857,7 +877,7 @@ event types are:
 |-------|--------|---------|
 | `progress` | `value` (0–1), `message` | A progress update; rate-limited and forwarded to the live events stream. |
 | `output_file` | `key` | Declares that the script produced `"$LETTS_WORKDIR"/out/<key>`, to be collected and committed to staging on success. |
-| `success` | `return` (object or null) | The terminal success event; `return` becomes the mission's result payload. |
+| `success` | `return` (object or null) | The terminal success event; `return` becomes the mission's result payload, capped by `max_return_value_size` (send large data as an output file). |
 | `fail` | `message`, `reason`, `details`, `exit_code` | The terminal failure event. |
 
 **Output and exit code.** Whatever the script writes to standard output and standard error
@@ -956,7 +976,9 @@ for example `killed_by_api`, `lane_removed`, `dugdale_shutdown`, `force_delete`,
 `php_memory_limit` (out of memory), `unknown_sigkill`, the various signal crashes
 (`segfault`, `sigbus`, and so on), and protocol violations such as `success_then_failed_exit`,
 `fail_then_zero_exit`, or `no_event_nonzero_exit`. The `lost` and `timeout` outcomes
-deliberately leave the fail reason empty.
+deliberately leave the fail reason empty. Every failure the daemon classifies itself —
+everything except a mission's own `fail` event — also carries a human-readable fail
+message, and some carry structured fail details (see the `limits` section).
 
 The SQLite database is opened in WAL mode with `synchronous=NORMAL`, foreign keys on, and
 incremental auto-vacuum. All writes go through a single serialized writer (a pinned-connection
@@ -1025,7 +1047,8 @@ A mission process speaks to the daemon over **file descriptor 3**, writing NDJSO
 (`progress`, `output_file`, `success`, `fail`). Standard output and standard error are
 captured into separate files plus an interleaved `combined` NDJSON file, all sharing one byte
 budget; on overflow the daemon writes a single truncation marker and flags the row. Standard
-error is additionally watched for the PHP out-of-memory marker, which maps the outcome to `oom`.
+error is additionally watched for the PHP out-of-memory marker, which maps the outcome to `oom`;
+the stderr line holding it becomes the fail message.
 
 ### Idempotency and fingerprints
 

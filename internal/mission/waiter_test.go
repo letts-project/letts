@@ -243,6 +243,9 @@ func TestRunImplicitFailNonzeroExit(t *testing.T) {
 	if got.ExitCode.Int64 != 7 {
 		t.Errorf("ExitCode=%d", got.ExitCode.Int64)
 	}
+	if want := "process exited with code 7 without a success/fail event; see stderr"; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q, want %q", got.FailMessage.String, want)
+	}
 }
 
 func TestRunTimeout(t *testing.T) {
@@ -265,6 +268,15 @@ func TestRunTimeout(t *testing.T) {
 	got := loadMission(t, db, id)
 	if got.Outcome.String != "timeout" {
 		t.Errorf("outcome=%q, want timeout", got.Outcome.String)
+	}
+	if got.FailReason.Valid {
+		t.Errorf("FailReason=%q, want NULL", got.FailReason.String)
+	}
+	if want := "mission exceeded its timeout of 200ms and was killed"; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q, want %q", got.FailMessage.String, want)
+	}
+	if got.FailDetails.String != `{"timeout_ms":200}` {
+		t.Errorf("FailDetails=%s, want {\"timeout_ms\":200}", got.FailDetails.String)
 	}
 }
 
@@ -340,6 +352,43 @@ func TestRunKillByAPI(t *testing.T) {
 	if got.Outcome.String != "killed" || got.FailReason.String != "killed_by_api" {
 		t.Errorf("outcome=%q reason=%q", got.Outcome.String, got.FailReason.String)
 	}
+	if want := "killed via the kill API"; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q, want %q", got.FailMessage.String, want)
+	}
+}
+
+func TestRunLaneRemovedMessageNamesLane(t *testing.T) {
+	db := openTestDB(t)
+	cfg := runFixtureCfg(t.TempDir())
+	scriptDir := t.TempDir()
+	script := writeScript(t, scriptDir, "sleep.sh", `sleep 30`)
+	id := runFixture(t, db, script, "bulk", 0)
+	m, _ := storage.GetMission(context.Background(), db, id)
+
+	killCh := make(chan ExternalKillReason, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(context.Background(), cfg, db, m, killCh, func() {})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	killCh <- KillLaneRemoved
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run didn't return after kill")
+	}
+
+	got := loadMission(t, db, id)
+	if got.Outcome.String != "killed" || got.FailReason.String != "lane_removed" {
+		t.Errorf("outcome=%q reason=%q", got.Outcome.String, got.FailReason.String)
+	}
+	if want := `killed because lane "bulk" was removed from the config`; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q, want %q", got.FailMessage.String, want)
+	}
 }
 
 func TestRunCtxCancelTreatedAsShutdown(t *testing.T) {
@@ -368,6 +417,9 @@ func TestRunCtxCancelTreatedAsShutdown(t *testing.T) {
 	got := loadMission(t, db, id)
 	if got.Outcome.String != "killed" || got.FailReason.String != "dugdale_shutdown" {
 		t.Errorf("outcome=%q reason=%q", got.Outcome.String, got.FailReason.String)
+	}
+	if want := "killed because dugdale was shutting down"; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q, want %q", got.FailMessage.String, want)
 	}
 }
 
@@ -530,6 +582,9 @@ exit 255`)
 	got := loadMission(t, db, id)
 	if got.Outcome.String != "oom" || got.FailReason.String != "php_memory_limit" {
 		t.Errorf("outcome=%q reason=%q, want oom/php_memory_limit", got.Outcome.String, got.FailReason.String)
+	}
+	if want := "PHP Fatal error:  Allowed memory size of 16777216 bytes exhausted"; got.FailMessage.String != want {
+		t.Errorf("FailMessage=%q, want %q", got.FailMessage.String, want)
 	}
 }
 

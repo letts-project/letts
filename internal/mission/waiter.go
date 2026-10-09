@@ -332,7 +332,10 @@ func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.
 	} else {
 		o = Compute(OutcomeInputs{
 			ExternalKill:  finalKill,
+			TimeoutMs:     m.TimeoutMs.Int64,
+			Lane:          m.Lane,
 			OOMDetected:   oomFlag.Load(),
+			OOMLine:       stderrSink.Line(),
 			ExitCode:      exitCode,
 			Signal:        signalName,
 			Fd3Final:      state.Final,

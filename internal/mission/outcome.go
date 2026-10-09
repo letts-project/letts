@@ -2,8 +2,11 @@ package mission
 
 import (
 	"encoding/json"
+	"fmt"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
 // sigName maps a termination signal to its stable symbolic short name
@@ -60,11 +63,14 @@ const (
 // OutcomeInputs aggregates everything needed to compute a mission outcome.
 type OutcomeInputs struct {
 	ExternalKill  ExternalKillReason
+	TimeoutMs     int64  // mission timeout, 0 if none; named in the timeout message
+	Lane          string // named in the lane_removed message
 	OOMDetected   bool   // PHP marker observed in stderr-copy goroutine
+	OOMLine       string // stderr line holding the PHP marker, if captured
 	ExitCode      int    // ProcessState.ExitCode (-1 if signaled)
 	Signal        string // "TERM"|"KILL"|"SEGV"|... empty if no signal
 	Fd3Final      *Fd3Final
-	Fd3Violations []string
+	Fd3Violations []Fd3Violation
 }
 
 // OutcomeResult is the tuple persisted to the missions row by Finalize.
@@ -84,25 +90,32 @@ type OutcomeResult struct {
 func Compute(in OutcomeInputs) OutcomeResult {
 	// 1. External kill wins over everything — even a fd3 success that arrived
 	// the millisecond before SIGTERM.
+	killMsg, killDetails := killFailure(in.ExternalKill, in.TimeoutMs, in.Lane)
 	switch in.ExternalKill {
 	case KillTimeout:
-		return OutcomeResult{Outcome: "timeout", ExitCode: in.ExitCode, Signal: in.Signal}
+		return OutcomeResult{Outcome: "timeout", FailMessage: killMsg, FailDetails: killDetails, ExitCode: in.ExitCode, Signal: in.Signal}
 	case KillForceDelete:
-		return OutcomeResult{Outcome: "killed", FailReason: "force_delete", ExitCode: in.ExitCode, Signal: in.Signal}
+		return OutcomeResult{Outcome: "killed", FailReason: "force_delete", FailMessage: killMsg, ExitCode: in.ExitCode, Signal: in.Signal}
 	case KillLaneRemoved:
-		return OutcomeResult{Outcome: "killed", FailReason: "lane_removed", ExitCode: in.ExitCode, Signal: in.Signal}
+		return OutcomeResult{Outcome: "killed", FailReason: "lane_removed", FailMessage: killMsg, ExitCode: in.ExitCode, Signal: in.Signal}
 	case KillDugdaleShutdown:
-		return OutcomeResult{Outcome: "killed", FailReason: "dugdale_shutdown", ExitCode: in.ExitCode, Signal: in.Signal}
+		return OutcomeResult{Outcome: "killed", FailReason: "dugdale_shutdown", FailMessage: killMsg, ExitCode: in.ExitCode, Signal: in.Signal}
 	case KillByAPI:
-		return OutcomeResult{Outcome: "killed", FailReason: "killed_by_api", ExitCode: in.ExitCode, Signal: in.Signal}
+		return OutcomeResult{Outcome: "killed", FailReason: "killed_by_api", FailMessage: killMsg, ExitCode: in.ExitCode, Signal: in.Signal}
 	}
 
 	// 2. OOM proof, then SIGKILL without proof.
 	if in.OOMDetected {
-		return OutcomeResult{Outcome: "oom", FailReason: "php_memory_limit", ExitCode: in.ExitCode, Signal: in.Signal}
+		msg := in.OOMLine
+		if msg == "" {
+			msg = "PHP memory limit exhausted (detected in stderr)"
+		}
+		return OutcomeResult{Outcome: "oom", FailReason: "php_memory_limit", FailMessage: msg, ExitCode: in.ExitCode, Signal: in.Signal}
 	}
 	if in.Signal == "KILL" || in.Signal == "killed" {
-		return OutcomeResult{Outcome: "killed", FailReason: "unknown_sigkill", ExitCode: in.ExitCode, Signal: in.Signal}
+		return OutcomeResult{Outcome: "killed", FailReason: "unknown_sigkill",
+			FailMessage: "process received SIGKILL not sent by dugdale (kernel OOM killer or an external kill)",
+			ExitCode:    in.ExitCode, Signal: in.Signal}
 	}
 
 	// 3. Signal != KILL without fd3 final. "segfault or corresponding" —
@@ -110,14 +123,16 @@ func Compute(in OutcomeInputs) OutcomeResult {
 	// distinguish SEGV from BUS/ILL/FPE.
 	if in.Signal != "" && in.Fd3Final == nil {
 		return OutcomeResult{Outcome: "failed", FailReason: signalToFailReason(in.Signal),
-			ExitCode: in.ExitCode, Signal: in.Signal}
+			FailMessage: fmt.Sprintf("process terminated by signal %s without a final event", in.Signal),
+			ExitCode:    in.ExitCode, Signal: in.Signal}
 	}
 
 	// 4. Fd3 protocol violations (only when no kill/OOM/signal pre-empted).
 	for _, v := range in.Fd3Violations {
-		switch v {
+		switch v.Reason {
 		case "event_line_too_large", "event_protocol_error", "duplicate_final_event", "too_many_output_files":
-			return OutcomeResult{Outcome: "failed", FailReason: v, ExitCode: in.ExitCode, Signal: in.Signal, DropReturn: true}
+			return OutcomeResult{Outcome: "failed", FailReason: v.Reason, FailMessage: v.Message, FailDetails: v.Details,
+				ExitCode: in.ExitCode, Signal: in.Signal, DropReturn: true}
 		}
 	}
 
@@ -128,14 +143,20 @@ func Compute(in OutcomeInputs) OutcomeResult {
 			if in.ExitCode == 0 {
 				return OutcomeResult{Outcome: "success", ExitCode: 0, Return: in.Fd3Final.Return}
 			}
-			return OutcomeResult{Outcome: "failed", FailReason: "success_then_failed_exit", ExitCode: in.ExitCode, Signal: in.Signal, DropReturn: true}
+			return OutcomeResult{Outcome: "failed", FailReason: "success_then_failed_exit",
+				FailMessage: fmt.Sprintf("mission emitted success but %s; return discarded", describeExit(in.ExitCode, in.Signal)),
+				ExitCode:    in.ExitCode, Signal: in.Signal, DropReturn: true}
 		case "fail":
 			reason := in.Fd3Final.Reason
 			if reason == "" {
 				reason = "explicit"
 			}
 			if in.ExitCode == 0 {
-				return OutcomeResult{Outcome: "failed", FailReason: "fail_then_zero_exit", FailMessage: in.Fd3Final.Message, FailDetails: in.Fd3Final.Details, ExitCode: 0}
+				msg := in.Fd3Final.Message
+				if msg == "" {
+					msg = "mission emitted fail but exited with code 0"
+				}
+				return OutcomeResult{Outcome: "failed", FailReason: "fail_then_zero_exit", FailMessage: msg, FailDetails: in.Fd3Final.Details, ExitCode: 0}
 			}
 			return OutcomeResult{Outcome: "failed", FailReason: reason, FailMessage: in.Fd3Final.Message, FailDetails: in.Fd3Final.Details, ExitCode: in.ExitCode, Signal: in.Signal}
 		}
@@ -145,7 +166,57 @@ func Compute(in OutcomeInputs) OutcomeResult {
 	if in.ExitCode == 0 {
 		return OutcomeResult{Outcome: "success", ExitCode: 0}
 	}
-	return OutcomeResult{Outcome: "failed", FailReason: "no_event_nonzero_exit", ExitCode: in.ExitCode, Signal: in.Signal}
+	return OutcomeResult{Outcome: "failed", FailReason: "no_event_nonzero_exit",
+		FailMessage: fmt.Sprintf("process exited with code %d without a success/fail event; see stderr", in.ExitCode),
+		ExitCode:    in.ExitCode, Signal: in.Signal}
+}
+
+// killFailure returns the fail_message and fail_details of a process dugdale
+// killed for reason r. timeoutMs and lane are named in the timeout and
+// lane_removed messages when known. Returns "" and nil for KillNone.
+func killFailure(r ExternalKillReason, timeoutMs int64, lane string) (string, json.RawMessage) {
+	switch r {
+	case KillTimeout:
+		if timeoutMs <= 0 {
+			return "mission exceeded its timeout and was killed", nil
+		}
+		return fmt.Sprintf("mission exceeded its timeout of %s and was killed", formatTimeoutMs(timeoutMs)),
+			json.RawMessage(fmt.Sprintf(`{"timeout_ms":%d}`, timeoutMs))
+	case KillForceDelete:
+		return "killed because the mission was force-deleted", nil
+	case KillLaneRemoved:
+		if lane == "" {
+			return "killed because its lane was removed from the config", nil
+		}
+		return fmt.Sprintf("killed because lane %q was removed from the config", lane), nil
+	case KillDugdaleShutdown:
+		return "killed because dugdale was shutting down", nil
+	case KillByAPI:
+		return "killed via the kill API", nil
+	}
+	return "", nil
+}
+
+// formatTimeoutMs renders a millisecond timeout as a Go duration without
+// trailing zero units: 30s, 1m30s, 1h.
+func formatTimeoutMs(ms int64) string {
+	s := (time.Duration(ms) * time.Millisecond).String()
+	if strings.HasSuffix(s, "m0s") {
+		s = strings.TrimSuffix(s, "0s")
+	}
+	if strings.HasSuffix(s, "h0m") {
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
+}
+
+// describeExit names how a process ended: "exited with code N" or
+// "was terminated by signal X".
+func describeExit(exitCode int, signal string) string {
+	if signal != "" {
+		return "was terminated by signal " + signal
+	}
+	return fmt.Sprintf("exited with code %d", exitCode)
 }
 
 // signalToFailReason maps a process-termination signal name to the

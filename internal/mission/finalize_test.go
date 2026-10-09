@@ -2,14 +2,17 @@ package mission
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus"
 
@@ -386,6 +389,13 @@ func TestFinalizeCapOutcomeReturnTooLarge(t *testing.T) {
 	if len(m.ReturnValue) != 0 {
 		t.Errorf("ReturnValue not dropped: %d bytes", len(m.ReturnValue))
 	}
+	wantMsg := "success return value is 1026 bytes, exceeds max_return_value_size (100 bytes); return less data or write it to an output file"
+	if m.FailMessage.String != wantMsg {
+		t.Errorf("FailMessage=%q\nwant    %q", m.FailMessage.String, wantMsg)
+	}
+	if m.FailDetails.String != `{"return_bytes":1026,"max_return_value_size":100}` {
+		t.Errorf("FailDetails=%s", m.FailDetails.String)
+	}
 }
 
 // TestFinalizeReturnTooLargeDoesNotCommitOutputs pins the demotion rule: when
@@ -612,8 +622,153 @@ func TestFinalizeCapOutcomeFailDetailsReplaced(t *testing.T) {
 		t.Fatalf("Finalize: %v", err)
 	}
 	m := loadMission(t, db, id)
-	if !strings.Contains(m.FailDetails.String, `"truncated":true`) {
+	if m.FailDetails.String != `{"truncated":true,"reason":"fail_details_too_large","original_bytes":1026}` {
 		t.Errorf("FailDetails not replaced: %q", m.FailDetails.String)
+	}
+}
+
+func TestCapOutcomeFailMessageTruncationIsRuneSafe(t *testing.T) {
+	msg := strings.Repeat("ж", 100)
+	for limit := int64(1); limit <= int64(len(msg)); limit++ {
+		got := capOutcome(OutcomeResult{Outcome: "failed", FailReason: "explicit", FailMessage: msg}, FinalizeConfig{MaxFailMessage: limit})
+		if int64(len(got.FailMessage)) > limit {
+			t.Errorf("limit %d: len=%d exceeds limit", limit, len(got.FailMessage))
+		}
+		if !utf8.ValidString(got.FailMessage) {
+			t.Errorf("limit %d: invalid UTF-8 %q", limit, got.FailMessage)
+		}
+		if limit < int64(len(msg)) && limit >= int64(len("…[truncated]")) && !strings.HasSuffix(got.FailMessage, "…[truncated]") {
+			t.Errorf("limit %d: missing suffix: %q", limit, got.FailMessage)
+		}
+	}
+}
+
+func TestCapOutcomeReturnTooLargeSetsMessageAndDetails(t *testing.T) {
+	ret := json.RawMessage(`{"files":"` + strings.Repeat("x", 899988) + `"}`)
+	got := capOutcome(OutcomeResult{Outcome: "success", Return: ret}, FinalizeConfig{MaxReturnValue: 786432})
+	if got.Outcome != "failed" || got.FailReason != "return_too_large" || got.Return != nil || !got.DropReturn {
+		t.Fatalf("got %+v, want failed/return_too_large with dropped return", got)
+	}
+	wantMsg := "success return value is 900000 bytes, exceeds max_return_value_size (786432 bytes); return less data or write it to an output file"
+	if got.FailMessage != wantMsg {
+		t.Errorf("FailMessage=%q\nwant    %q", got.FailMessage, wantMsg)
+	}
+	if string(got.FailDetails) != `{"return_bytes":900000,"max_return_value_size":786432}` {
+		t.Errorf("FailDetails=%s", got.FailDetails)
+	}
+
+	kept := capOutcome(OutcomeResult{Outcome: "failed", FailReason: "event_line_too_large", FailMessage: "m", FailDetails: json.RawMessage(`{"fd3_line":1}`), DropReturn: true},
+		FinalizeConfig{MaxReturnValue: 10})
+	if kept.FailReason != "event_line_too_large" || kept.FailMessage != "m" || string(kept.FailDetails) != `{"fd3_line":1}` {
+		t.Errorf("non-demoted outcome rewritten: %+v", kept)
+	}
+}
+
+func captureDefaultLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+func finishedLogLine(t *testing.T, buf *bytes.Buffer) (map[string]any, []string) {
+	t.Helper()
+	sc := bufio.NewScanner(buf)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		var rec map[string]any
+		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
+			t.Fatalf("log line %q: %v", sc.Text(), err)
+		}
+		if rec["msg"] != "mission" || rec["phase"] != "finished" {
+			continue
+		}
+		dec := json.NewDecoder(bytes.NewReader(sc.Bytes()))
+		var keys []string
+		_, _ = dec.Token()
+		for dec.More() {
+			tok, _ := dec.Token()
+			keys = append(keys, tok.(string))
+			var skip json.RawMessage
+			_ = dec.Decode(&skip)
+		}
+		return rec, keys
+	}
+	t.Fatal("no mission phase=finished log line")
+	return nil, nil
+}
+
+func TestFinalizeFinishedLogIncludesFailure(t *testing.T) {
+	id, dataDir, db := finalizeFixture(t)
+	buf := captureDefaultLog(t)
+	msg := strings.Repeat("ж", 1000)
+	if err := Finalize(context.Background(), db, FinalizeInputs{
+		MissionID: id,
+		Kind:      "mission",
+		Lane:      "normal",
+		Outcome:   OutcomeResult{Outcome: "failed", FailReason: "segfault", FailMessage: msg, ExitCode: -1, Signal: "SEGV"},
+		Cfg:       FinalizeConfig{DataDir: dataDir},
+	}); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	rec, keys := finishedLogLine(t, buf)
+	if rec["fail_reason"] != "segfault" {
+		t.Errorf("fail_reason=%v", rec["fail_reason"])
+	}
+	logged, _ := rec["fail_message"].(string)
+	if logged == "" || len(logged) > 512 || !utf8.ValidString(logged) || !strings.HasPrefix(msg, logged) {
+		t.Errorf("fail_message not clipped rune-safely to 512 bytes: %d bytes", len(logged))
+	}
+	if rec["exit_code"] != float64(-1) {
+		t.Errorf("exit_code=%v, want -1", rec["exit_code"])
+	}
+	if rec["signal"] != "SEGV" {
+		t.Errorf("signal=%v, want SEGV", rec["signal"])
+	}
+	want := []string{"time", "level", "msg", "phase", "mission_id", "kind", "lane", "outcome", "duration_ms", "fail_reason", "fail_message", "exit_code", "signal"}
+	if strings.Join(keys, ",") != strings.Join(want, ",") {
+		t.Errorf("keys=%v\nwant %v", keys, want)
+	}
+}
+
+func TestFinalizeFinishedLogOmitsEmptyFailureFields(t *testing.T) {
+	id, dataDir, db := finalizeFixture(t)
+	buf := captureDefaultLog(t)
+	if err := Finalize(context.Background(), db, FinalizeInputs{
+		MissionID: id,
+		Outcome:   OutcomeResult{Outcome: "timeout", ExitCode: 143},
+		Cfg:       FinalizeConfig{DataDir: dataDir},
+	}); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	rec, _ := finishedLogLine(t, buf)
+	for _, k := range []string{"fail_reason", "fail_message", "signal"} {
+		if _, ok := rec[k]; ok {
+			t.Errorf("%s logged for an empty value: %v", k, rec[k])
+		}
+	}
+	if rec["exit_code"] != float64(143) {
+		t.Errorf("exit_code=%v, want 143", rec["exit_code"])
+	}
+}
+
+func TestFinalizeFinishedLogSuccessHasNoFailureFields(t *testing.T) {
+	id, dataDir, db := finalizeFixture(t)
+	buf := captureDefaultLog(t)
+	if err := Finalize(context.Background(), db, FinalizeInputs{
+		MissionID: id,
+		Outcome:   OutcomeResult{Outcome: "success"},
+		Cfg:       FinalizeConfig{DataDir: dataDir},
+	}); err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	rec, _ := finishedLogLine(t, buf)
+	for _, k := range []string{"fail_reason", "fail_message", "exit_code", "signal"} {
+		if _, ok := rec[k]; ok {
+			t.Errorf("%s logged on success: %v", k, rec[k])
+		}
 	}
 }
 

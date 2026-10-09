@@ -79,3 +79,31 @@ func TestRootCommandUsageErrorsExitBadUsage(t *testing.T) {
 		})
 	}
 }
+
+func TestMissionOutcomeErrorText(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"failed explicit", missionFailedError("explicit", "boom"), "mission failed: boom"},
+		{"failed without reason", missionFailedError("", "boom"), "mission failed: boom"},
+		{"failed daemon reason", missionFailedError("event_line_too_large", "fd3 success event (line 1) is 2048 bytes, exceeds max_event_line_size (1024 bytes)"),
+			"mission failed: event_line_too_large: fd3 success event (line 1) is 2048 bytes, exceeds max_event_line_size (1024 bytes)"},
+		{"failed reason only", missionFailedError("no_event_nonzero_exit", ""), "mission failed: no_event_nonzero_exit"},
+		{"failed nothing known", missionFailedError("", ""), "mission failed: (no message)"},
+		{"abnormal with reason", &MissionAbnormalError{Outcome: "killed", Reason: "killed_by_api", Message: "killed via the kill API"},
+			"mission did not exit normally: killed/killed_by_api: killed via the kill API"},
+		{"abnormal without reason", &MissionAbnormalError{Outcome: "timeout", Message: "mission exceeded its timeout of 30s and was killed"},
+			"mission did not exit normally: timeout: mission exceeded its timeout of 30s and was killed"},
+		{"abnormal outcome only", NewMissionAbnormalError("lost"), "mission did not exit normally: lost"},
+		{"abnormal without done", NewMissionAbnormalError(""), "mission did not exit normally"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.err.Error(); got != tc.want {
+				t.Errorf("Error()=%q\nwant    %q", got, tc.want)
+			}
+		})
+	}
+}

@@ -330,14 +330,10 @@ func runOne(cmd *cobra.Command, ac *appCtx, rf *runFlags, hostOverride string, i
 	case "success":
 		return nil
 	case "failed":
-		msg := doneEv.FailMessage
-		if msg == "" {
-			msg = "(no message)"
-		}
-		return fmt.Errorf("mission failed: %s", msg)
+		return missionFailedError(doneEv.FailReason, doneEv.FailMessage)
 	default:
 		// killed | timeout | oom | crashed | lost | "" (no done at all)
-		return NewMissionAbnormalError(doneEv.Outcome)
+		return &MissionAbnormalError{Outcome: doneEv.Outcome, Reason: doneEv.FailReason, Message: doneEv.FailMessage}
 	}
 }
 
