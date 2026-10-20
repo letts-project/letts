@@ -29,7 +29,7 @@ func TestCtlExecOutputStreamStdout(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
 
-	if err := runCtlMissionsOutput(cmd, ac, "0192aaaa-0000-7000-8000-000000000001", "s1", "stdout", false, nil); err != nil {
+	if err := runCtlMissionsOutput(cmd, ac, FormatText, readScopesExec, "0192aaaa-0000-7000-8000-000000000001", "s1", "stdout", false, nil); err != nil {
 		t.Fatalf("runCtlMissionsOutput: %v", err)
 	}
 	if !strings.HasPrefix(gotPath, "/v1/missions/0192aaaa-0000-7000-8000-000000000001/output") {
@@ -58,7 +58,7 @@ func TestCtlExecRestartSuccess(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlExecRestart(ac, &out, "0192aaaa-0000-7000-8000-000000000001", "s1", FormatText); err != nil {
+	if err := runCtlExecRestart(ac, &out, io.Discard, "0192aaaa-0000-7000-8000-000000000001", "s1", FormatText); err != nil {
 		t.Fatalf("runCtlExecRestart: %v", err)
 	}
 	if gotMethod != "POST" {
@@ -76,8 +76,9 @@ func TestCtlExecRestartSuccess(t *testing.T) {
 }
 
 // TestCtlExecRestartArtifactsExpired — the daemon's 409 with code
-// input_artifacts_expired must render the multi-line friendly message
-// and surface a non-nil error so the CLI exits non-zero.
+// input_artifacts_expired must render the multi-line friendly message on
+// stderr (stdout stays clean for -o json) and surface a non-nil error so the
+// CLI exits non-zero.
 func TestCtlExecRestartArtifactsExpired(t *testing.T) {
 	ac, stop := stubAppCtx(t, "s1", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -86,12 +87,15 @@ func TestCtlExecRestartArtifactsExpired(t *testing.T) {
 	}))
 	defer stop()
 
-	var out bytes.Buffer
-	err := runCtlExecRestart(ac, &out, "0192aaaa-0000-7000-8000-000000000001", "s1", FormatText)
+	var out, errOut bytes.Buffer
+	err := runCtlExecRestart(ac, &out, &errOut, "0192aaaa-0000-7000-8000-000000000001", "s1", FormatJSON)
 	if err == nil {
 		t.Fatal("expected error for 409 input_artifacts_expired")
 	}
-	body := out.String()
+	if out.Len() != 0 {
+		t.Errorf("stdout=%q, want the explanation on stderr only", out.String())
+	}
+	body := errOut.String()
 	if !strings.Contains(body, "input artifacts have expired") {
 		t.Errorf("missing friendly headline: %q", body)
 	}
@@ -119,7 +123,7 @@ func TestCtlExecListPassesKindExec(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1",
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1",
 		lettsclient.ListMissionsOpts{Kind: "exec"}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
@@ -141,7 +145,7 @@ func TestCtlExecListWithGroupFilter(t *testing.T) {
 
 	gid := "0192aaaa-0000-7000-8000-000000000000"
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1",
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1",
 		lettsclient.ListMissionsOpts{Kind: "exec", GroupID: gid}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
@@ -164,7 +168,7 @@ func TestCtlExecListShowsGroupIDColumn(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1",
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1",
 		lettsclient.ListMissionsOpts{Kind: "exec"}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}

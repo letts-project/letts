@@ -94,15 +94,11 @@ func runDispatch(cmd *cobra.Command, ac *appCtx, df *dispatchFlags, f Format) er
 	if err != nil {
 		return err
 	}
-	switch f {
-	case FormatJSON:
-		return PrintJSON(cmd.OutOrStdout(), resp)
-	case FormatYAML:
-		return PrintYAML(cmd.OutOrStdout(), resp)
-	default:
-		_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", resp.MissionID, resp.Status)
-		return nil
+	if ok, err := printRecord(cmd.OutOrStdout(), f, resp); ok {
+		return err
 	}
+	_, _ = fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", resp.MissionID, resp.Status)
+	return nil
 }
 
 // resolveTarget picks (host_id, lane) from flags. Precedence:

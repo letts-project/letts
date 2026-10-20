@@ -581,6 +581,12 @@ selector:
 - **Token resolution.** For a given dugdale and scope, the client prefers the
   dugdale-local token, falls back to the matching global `auth.*` token, and then expands
   any `${VAR}` reference. An empty result after all fallbacks is an error.
+- **Which token a read uses.** Reads of one mission by id (`ctl missions show`,
+  `ctl exec show`, `logs` and the `output` subcommands, `events`) try the configured
+  tokens in turn — dispatch, exec, admin, with exec first under `ctl exec` — and move on
+  only when the daemon answers `403 forbidden_kind`, so they work for both missions and
+  execs. `ctl lanes list` and `ctl dugdales info` prefer the admin token, because the
+  daemon counts only the token's own kind for dispatch and exec tokens.
 - **Environment substitution.** `${NAME}` is replaced from the environment. A value that
   is *purely* `${VAR}` is treated as a secret kept out of the file; any literal bytes
   (including a mixed `prefix-${VAR}`) make it a plain-text token.
@@ -687,11 +693,15 @@ Every subcommand inherits these persistent flags:
 | `-v, --verbose` | `false` | Print debug diagnostics to stderr: the resolved config path, and the base URL and scope each request targets. |
 | `-q, --quiet` | `false` | Suppress informational stderr output (`run`'s event/log tailing, `apply`'s plain-token warning). Results on stdout are unaffected. |
 
-Not every command honors every output format — for instance, `events` always emits
-NDJSON, and several `ctl` text renderers fall back to JSON or YAML for nested records.
+`yaml` uses the same field names as `json`. `ndjson` prints one compact JSON object per
+line: one per item for listings (the next-page cursor goes to stderr as `cursor: …`) and
+one per record otherwise. Not every command honors every output format — for instance,
+`events` always emits NDJSON, `ctl missions show`, `ctl exec show` and
+`ctl dugdales config` fall back to JSON in text mode, and kill, delete, pause, continue and
+staging delete print nothing on success.
 The global `--quiet`/`-q` is what suppresses `run`'s live event and log tailing; `run`
 also has its own `--no-progress` (hide progress events) and `--logs` (show captured
-stderr even under `--output=json`).
+stderr even under `--output=json|yaml`).
 
 ### Exit codes
 
@@ -740,7 +750,9 @@ than one does. The exception is `ctl exec restart`, which always requires an exp
 
 The `--selector` syntax used by bulk `restart`/`delete` is a comma-separated list of
 `key=value` pairs. Supported keys are `status`, `outcome`, `lane`, `mission`,
-`mission_prefix`, `since`, and `until`. A `since`/`until` value may be an absolute Unix
+`mission_prefix`, `since`, and `until`. `mission` (like `ctl missions list --mission`)
+matches a substring of the mission name, so `mission=report` also selects
+`daily_report`; use `mission_prefix` or `--dry-run` to check before a bulk delete. A `since`/`until` value may be an absolute Unix
 millisecond timestamp or a relative duration such as `-1h`, `-30m`, or `-7d`.
 
 ### Command reference
@@ -786,10 +798,15 @@ parallel fan-out (the aggregate exit code reflects the worst outcome).
 
 It adds, on top of the `dispatch` flags: `--output-file role=path` (download an output on
 success, repeatable), `--wait-timeout` (client-side deadline; `0` means wait forever),
-`--no-progress`, and `--logs` (show captured stderr even in `--output=json`); the global
-`--quiet` suppresses all tailing. The wait deadline defaults sensibly from `--timeout`
-plus a grace when not given explicitly. With multiple hosts, `--output-file` and
-`--mission-id` are rejected.
+`--no-progress` (also drops progress events from `--output=ndjson`), and `--logs` (show
+the output tail on stderr even under `--output=json|yaml`: live for one host, in
+`== <host> ==` blocks once all hosts finish for several); the global `--quiet` suppresses
+all console tailing. Under `json` and `yaml` the result carries the captured output in a
+`logs` field (with multiple hosts, per host), `--quiet` or not. A zero `--wait-timeout`
+(`0`, `0s`) waits forever; the deadline otherwise defaults from `--timeout` plus a grace.
+`--wait-timeout` is validated before anything is dispatched. With multiple hosts,
+`--output-file` and `--mission-id` are rejected, and under `ndjson` a host that fails
+before its mission finishes is reported as an `{"host", "event": "error", "error"}` line.
 
 #### `letts exec`
 
@@ -808,7 +825,7 @@ from `selector.match`.
 | `--stdin` | `none`, `single`, or `broadcast` (default inferred from a TTY and host count). |
 | `--timeout` / `--wait-timeout` | Server-side and client-side deadlines. |
 | `--detach` | Print the `exec_id` (or `group_id`) and exit. |
-| `--output` | `raw`, `prefix`, `json`, or `ndjson` (default `raw` for one host, `prefix` for several). |
+| `--output` | `raw`, `prefix`, `json`, or `ndjson` (default `raw` for one host, `prefix` for several); any other value is rejected before dispatch. |
 | `--output-buffer` | Per-host buffer cap for `json` mode (bytes; default 65536). |
 | `--allow-shell` | Permit shell-form argv (the daemon still gates on `exec.allow_shell`). |
 | `--mission-id` / `--group-id` | Override the `exec_id` (single host) or `group_id` (multi-host). |
@@ -816,14 +833,29 @@ from `selector.match`.
 #### `letts events <mission_id>`
 
 A low-level helper that streams a mission's event file as NDJSON, one event per line,
-always as NDJSON regardless of `--output`. `--host` is required. Flags: `--follow`
-(tail live events) and `--from <seq>` (resume from a sequence cursor).
+always as NDJSON regardless of `--output`. `--host` is required. Without `--follow` it
+prints the events written so far and exits 0. `--follow` tails until the `done` event,
+reconnecting after transport errors and 5xx, 408 and 429 responses; any other 4xx (a bad
+token, or a `forbidden_kind` that no other configured token passes) ends it with an
+error, as does resuming past the `done` event of a finished mission. `--from <seq>`
+resumes from a sequence cursor.
 
 #### `letts logs <mission_id>`
 
 An alias for `ctl missions output`: streams a job's `stdout`, `stderr`, or `combined`
 capture. Without `--host` it uses by-id fan-out. Flags: `--host`, `--match`,
 `--stream` (`stdout`|`stderr`|`combined`, default `combined`), and `--follow`.
+
+The global `--output` picks the rendering (same for `ctl missions output` and
+`ctl exec output`):
+
+- `text` (default) prints the captured output itself; for `combined`, stdout and stderr
+  interleaved in the order they were written.
+- `ndjson` prints one `{"t", "stream", "data"}` frame per line. Non-UTF-8 chunks carry
+  base64 `data` and `"encoding": "base64"`. For `stdout`/`stderr` a frame is one line of
+  output and has no `t`.
+- `json` and `yaml` print a single array of those frames once the stream ends (with
+  `--follow`, once the mission finishes).
 
 #### `letts ctl …`
 
@@ -841,7 +873,12 @@ The `ctl` group holds control and inspection subcommands:
   `--cursor`). **`ctl missions show <id>`**, **`output <id>`**, **`restart [<id>]`**,
   **`kill <id>`**, and **`delete [<id>]`** operate on a single mission (with by-id fan-out
   when `--host` is omitted) or, for `restart`/`delete`, on a bulk `--selector` set with an
-  interactive confirmation that `--yes` skips.
+  interactive confirmation that `--yes` skips. `--dry-run` lists what would be acted on
+  without acting, for a single id too (after checking it exists). A bulk run acts on one
+  page of matches (`--limit`, else the daemon default) and warns on stderr when more
+  match; with no matches it does nothing. Under `json`/`yaml` a bulk run prints the
+  daemon's `{"results": […]}` (`{"dry_run": true, "ids": […]}` for `--dry-run`), under
+  `ndjson` one result per line.
 - **`ctl staging upload <path>`**, **`download <id>`**, **`delete <id>`**, and **`list`** —
   manage staging artifacts. Staging ids are not portable across hosts, so these are always
   per-host (`--host` required).
@@ -853,7 +890,8 @@ The `ctl` group holds control and inspection subcommands:
 
 #### `letts version`
 
-Prints `letts <version>` from the build-time version metadata.
+Prints `letts <version>` from the build-time version metadata to stdout
+(`{"version": …}` under `json`, `yaml` and `ndjson`).
 
 ---
 

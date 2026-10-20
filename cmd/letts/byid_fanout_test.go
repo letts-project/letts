@@ -181,7 +181,6 @@ func TestFanOutByID_matchFilter(t *testing.T) {
 
 // stubByIDAppCtxWithTokens spins up N stub servers and wires them as dugdales
 // with the given (dispatch, admin, exec) tokens — empty string means absent.
-// Used to exercise FanOutByIDForScope scope-fallback paths.
 func stubByIDAppCtxWithTokens(t *testing.T, stubs []*fanoutByIDStub,
 	dispatchTok, adminTok, execTok string,
 ) *appCtx {
@@ -213,69 +212,13 @@ func stubByIDAppCtxWithTokens(t *testing.T, stubs []*fanoutByIDStub,
 	}
 }
 
-// TestFanOutByIDForScope_DispatchFallsBackToAdmin: preferred scope is
-// dispatch but only admin is configured — the helper should still succeed
-// using the admin token. Backward-compat baseline.
-func TestFanOutByIDForScope_DispatchFallsBackToAdmin(t *testing.T) {
-	ac := stubByIDAppCtxWithTokens(t, []*fanoutByIDStub{
-		{id: "a", status: 200, body: `{"mission_id":"mid","status":"done"}`},
-	}, "", "atok", "")
-	m, host, err := FanOutByIDForScope(ac, nil, lettsconfig.ScopeDispatch, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
-		return lettsclient.GetMission(c, "mid")
-	})
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	if host != "a" || m == nil || m.MissionID != "mid" {
-		t.Errorf("host=%q m=%+v", host, m)
-	}
-}
-
-// TestFanOutByIDForScope_DispatchOnlyConfig: preferred scope dispatch is
-// configured, admin is NOT — the helper should use the dispatch token
-// rather than failing with "no admin token configured". This is the
-// case operators hit when they only carry a read-only dispatch token.
-// Current code unconditionally uses admin and would fail.
-func TestFanOutByIDForScope_DispatchOnlyConfig(t *testing.T) {
-	ac := stubByIDAppCtxWithTokens(t, []*fanoutByIDStub{
-		{id: "a", status: 200, body: `{"mission_id":"mid","status":"done"}`},
-	}, "dtok", "", "")
-	m, host, err := FanOutByIDForScope(ac, nil, lettsconfig.ScopeDispatch, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
-		return lettsclient.GetMission(c, "mid")
-	})
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	if host != "a" || m == nil || m.MissionID != "mid" {
-		t.Errorf("host=%q m=%+v", host, m)
-	}
-}
-
-// TestFanOutByIDForScope_ExecOnlyConfig: preferred scope exec, only exec
-// token configured. Symmetric case for kind=exec readers.
-func TestFanOutByIDForScope_ExecOnlyConfig(t *testing.T) {
-	ac := stubByIDAppCtxWithTokens(t, []*fanoutByIDStub{
-		{id: "a", status: 200, body: `{"mission_id":"mid","status":"done"}`},
-	}, "", "", "etok")
-	m, host, err := FanOutByIDForScope(ac, nil, lettsconfig.ScopeExec, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
-		return lettsclient.GetMission(c, "mid")
-	})
-	if err != nil {
-		t.Fatalf("err=%v", err)
-	}
-	if host != "a" || m == nil || m.MissionID != "mid" {
-		t.Errorf("host=%q m=%+v", host, m)
-	}
-}
-
-// TestFanOutByIDForScope_AdminOnlyForMutation: helper invoked with
-// ScopeAdmin behaves like the legacy FanOutByID — no fallback to other
-// scopes (mutation commands must require admin).
-func TestFanOutByIDForScope_AdminOnlyForMutation(t *testing.T) {
+// TestFanOutByID_AdminOnly: FanOutByID never falls back to another scope
+// (mutation commands must require admin).
+func TestFanOutByID_AdminOnly(t *testing.T) {
 	ac := stubByIDAppCtxWithTokens(t, []*fanoutByIDStub{
 		{id: "a", status: 200, body: `{}`},
 	}, "dtok", "", "")
-	_, _, err := FanOutByIDForScope(ac, nil, lettsconfig.ScopeAdmin, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
+	_, _, err := FanOutByID(ac, nil, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
 		return lettsclient.GetMission(c, "mid")
 	})
 	if err == nil {
@@ -515,5 +458,176 @@ func TestFanOutByID_noCandidates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no dugdales match labels") {
 		t.Errorf("err=%q want substring 'no dugdales match labels'", err.Error())
+	}
+}
+
+// kindGateAppCtx wires dugdales whose /output answers 200 only for the tokens
+// in allowed (the daemon's kind gate) and 403 forbidden_kind for any other
+// token, recording every token presented.
+func kindGateAppCtx(t *testing.T, ids []string, allowed map[string]bool, dispatchTok, adminTok, execTok string) (*appCtx, func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var seen []string
+	dugs := make([]lettsconfig.Dugdale, 0, len(ids))
+	baseURLs := map[string]string{}
+	for _, id := range ids {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			mu.Lock()
+			seen = append(seen, tok)
+			mu.Unlock()
+			if !allowed[tok] {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = io.WriteString(w, `{"error":"forbidden_kind","message":"token scope does not permit access to this mission kind"}`)
+				return
+			}
+			_, _ = io.WriteString(w, "payload")
+		}))
+		t.Cleanup(srv.Close)
+		dugs = append(dugs, lettsconfig.Dugdale{ID: id, Host: "ignored", Token: dispatchTok, AdminToken: adminTok, ExecToken: execTok})
+		baseURLs[id] = srv.URL
+	}
+	ac := &appCtx{
+		Config:       &lettsconfig.Config{Dugdales: dugs},
+		Getenv:       func(k string) (string, bool) { return "", false },
+		BaseURLForID: baseURLs,
+		clients:      map[clientKey]*hostClient{},
+	}
+	return ac, func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), seen...)
+	}
+}
+
+func readOutput(t *testing.T, ac *appCtx, scopes []lettsconfig.Scope, host string) (string, error) {
+	t.Helper()
+	cmd := newLogsCmd()
+	cmd.SetContext(t.Context())
+	var out strings.Builder
+	cmd.SetOut(&out)
+	err := runCtlMissionsOutput(cmd, ac, FormatText, scopes, "mid", host, "stdout", false, nil)
+	return out.String(), err
+}
+
+func TestOutputRead_ForbiddenKindMovesToNextScope(t *testing.T) {
+	for _, host := range []string{"s1", ""} {
+		ac, seen := kindGateAppCtx(t, []string{"s1"}, map[string]bool{"etok": true, "atok": true}, "dtok", "atok", "etok")
+		got, err := readOutput(t, ac, readScopesMission, host)
+		if err != nil || got != "payload" {
+			t.Fatalf("host=%q: got %q err=%v", host, got, err)
+		}
+		if s := seen(); len(s) != 2 || s[0] != "dtok" || s[1] != "etok" {
+			t.Errorf("host=%q: tokens tried = %v, want [dtok etok]", host, s)
+		}
+	}
+}
+
+func TestOutputRead_ExecScopesTryExecFirst(t *testing.T) {
+	ac, seen := kindGateAppCtx(t, []string{"s1"}, map[string]bool{"etok": true}, "dtok", "atok", "etok")
+	if got, err := readOutput(t, ac, readScopesExec, "s1"); err != nil || got != "payload" {
+		t.Fatalf("got %q err=%v", got, err)
+	}
+	if s := seen(); len(s) != 1 || s[0] != "etok" {
+		t.Errorf("tokens tried = %v, want [etok]", s)
+	}
+}
+
+func TestOutputRead_ForbiddenKindSurfacesWhenNoOtherScope(t *testing.T) {
+	ac, _ := kindGateAppCtx(t, []string{"s1"}, map[string]bool{}, "dtok", "", "")
+	_, err := readOutput(t, ac, readScopesMission, "s1")
+	var he *lettsclient.HTTPError
+	if !errors.As(err, &he) || he.Code != "forbidden_kind" {
+		t.Fatalf("err=%v, want forbidden_kind", err)
+	}
+}
+
+func TestOutputRead_OtherErrorsDoNotRetry(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":"unauthorized","message":"bad token"}`)
+	}))
+	t.Cleanup(srv.Close)
+	ac := &appCtx{
+		Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: "dtok", AdminToken: "atok", ExecToken: "etok"}}},
+		Getenv:       func(k string) (string, bool) { return "", false },
+		BaseURLForID: map[string]string{"s1": srv.URL},
+		clients:      map[clientKey]*hostClient{},
+	}
+	_, err := readOutput(t, ac, readScopesMission, "s1")
+	var he *lettsclient.HTTPError
+	if !errors.As(err, &he) || he.Status != 401 || calls != 1 {
+		t.Fatalf("err=%v calls=%d, want one 401", err, calls)
+	}
+}
+
+func TestOutputRead_NoTokensIsConfigError(t *testing.T) {
+	ac, _ := kindGateAppCtx(t, []string{"s1"}, map[string]bool{}, "", "", "")
+	_, err := readOutput(t, ac, readScopesMission, "s1")
+	var ce *ConfigError
+	if !errors.As(err, &ce) {
+		t.Fatalf("err=%v (%T), want ConfigError", err, err)
+	}
+}
+
+func TestCtlExecShowNamedMissionGivesHint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "Bearer etok" {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `{"error":"forbidden_kind","message":"no"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"mission_id":"mid","kind":"mission","status":"done"}`)
+	}))
+	t.Cleanup(srv.Close)
+	ac := &appCtx{
+		Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: "dtok", AdminToken: "atok", ExecToken: "etok"}}},
+		Getenv:       func(k string) (string, bool) { return "", false },
+		BaseURLForID: map[string]string{"s1": srv.URL},
+		clients:      map[clientKey]*hostClient{},
+	}
+	err := runCtlExecShow(ac, io.Discard, "mid", "s1", nil, FormatJSON)
+	var bu *BadUsageError
+	if !errors.As(err, &bu) || !strings.Contains(err.Error(), "ctl missions show") {
+		t.Fatalf("err=%v, want BadUsage hint", err)
+	}
+}
+
+func TestInspectPrefersAdminToken(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = append(got, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/lanes" {
+			_, _ = io.WriteString(w, `[]`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"version":"x"}`)
+	}))
+	t.Cleanup(srv.Close)
+	for _, toks := range []struct{ d, a, e, want string }{
+		{"dtok", "atok", "etok", "Bearer atok"},
+		{"", "", "etok", "Bearer etok"},
+	} {
+		got = nil
+		ac := &appCtx{
+			Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: toks.d, AdminToken: toks.a, ExecToken: toks.e}}},
+			Getenv:       func(k string) (string, bool) { return "", false },
+			BaseURLForID: map[string]string{"s1": srv.URL},
+			clients:      map[clientKey]*hostClient{},
+		}
+		if err := runCtlLanesList(ac, io.Discard, "s1", FormatJSON); err != nil {
+			t.Fatal(err)
+		}
+		if err := runCtlDugdalesInfo(ac, io.Discard, "s1", FormatJSON); err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 2 || got[0] != toks.want || got[1] != toks.want {
+			t.Errorf("tokens=%v, want %s for both", got, toks.want)
+		}
 	}
 }

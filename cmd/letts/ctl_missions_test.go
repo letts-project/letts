@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestCtlMissionsListJSONFormat(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1", lettsclient.ListMissionsOpts{}, FormatJSON); err != nil {
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", lettsclient.ListMissionsOpts{}, FormatJSON); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
 	var resp lettsclient.ListMissionsResponse
@@ -67,7 +68,7 @@ func TestCtlMissionsListTextFormat(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1", lettsclient.ListMissionsOpts{}, FormatText); err != nil {
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", lettsclient.ListMissionsOpts{}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
 	s := out.String()
@@ -105,7 +106,7 @@ func TestCtlMissionsListOmitsGroupIDWhenAbsent(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1",
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1",
 		lettsclient.ListMissionsOpts{Kind: "mission"}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
@@ -128,7 +129,7 @@ func TestCtlMissionsListNoCursorOmitsFooter(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1", lettsclient.ListMissionsOpts{}, FormatText); err != nil {
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", lettsclient.ListMissionsOpts{}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
 	if strings.Contains(out.String(), "cursor:") {
@@ -160,7 +161,7 @@ func TestCtlMissionsListFilters(t *testing.T) {
 		Limit:   25,
 	}
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1", opts, FormatJSON); err != nil {
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", opts, FormatJSON); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
 	for _, kv := range []string{
@@ -262,7 +263,7 @@ func TestCtlMissionsOutputStreamsToStdout(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
 
-	if err := runCtlMissionsOutput(cmd, ac, "mid", "s1", "stdout", false, nil); err != nil {
+	if err := runCtlMissionsOutput(cmd, ac, FormatText, readScopesMission, "mid", "s1", "stdout", false, nil); err != nil {
 		t.Fatalf("runCtlMissionsOutput: %v", err)
 	}
 	if !strings.Contains(out.String(), "line one") || !strings.Contains(out.String(), "line two") {
@@ -459,7 +460,7 @@ func TestBulkRestartDryRun(t *testing.T) {
 	defer stop()
 
 	var out, errOut bytes.Buffer
-	if err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), "s1", "outcome=failed", 0, true /*dryRun*/, false /*yes*/); err != nil {
+	if err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, true /*dryRun*/, false /*yes*/); err != nil {
 		t.Fatalf("runCtlMissionsBulkRestart: %v", err)
 	}
 	if rec.bulkHits != 0 {
@@ -492,7 +493,7 @@ func TestBulkRestartConfirmYes(t *testing.T) {
 	defer stop()
 
 	var out, errOut bytes.Buffer
-	err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), "s1", "outcome=failed,since=-1h", 0, false /*dryRun*/, true /*yes*/)
+	err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed,since=-1h", 0, false /*dryRun*/, true /*yes*/)
 	if err == nil || !strings.Contains(err.Error(), "1 of 2 restart operations failed") {
 		t.Fatalf("want aggregate partial-failure error, got %v", err)
 	}
@@ -529,7 +530,7 @@ func TestBulkRestartConfirmAborted(t *testing.T) {
 	defer stop()
 
 	var out, errOut bytes.Buffer
-	err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader("n\n"), "s1", "outcome=failed", 0, false, false)
+	err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader("n\n"), FormatText, "s1", "outcome=failed", 0, false, false)
 	if err == nil || !strings.Contains(err.Error(), "aborted") {
 		t.Fatalf("want 'aborted' error, got %v", err)
 	}
@@ -557,7 +558,7 @@ func TestBulkRestartLimitOverridesSelector(t *testing.T) {
 	defer stop()
 
 	var out, errOut bytes.Buffer
-	if err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), "s1", "outcome=failed", 50, false, true); err != nil {
+	if err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 50, false, true); err != nil {
 		t.Fatalf("runCtlMissionsBulkRestart: %v", err)
 	}
 	if !strings.Contains(rec.listQuery, "limit=50") {
@@ -575,7 +576,7 @@ func TestBulkDeleteForwardsForce(t *testing.T) {
 	defer stop()
 
 	var out, errOut bytes.Buffer
-	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), "s1", "outcome=success,since=-7d", 0, true /*force*/, false, true /*yes*/); err != nil {
+	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=success,since=-7d", 0, true /*force*/, false, true /*yes*/); err != nil {
 		t.Fatalf("runCtlMissionsBulkDelete: %v", err)
 	}
 	if rec.bulkHits != 1 {
@@ -602,7 +603,7 @@ func TestBulkDeleteDryRun(t *testing.T) {
 	defer stop()
 
 	var out, errOut bytes.Buffer
-	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), "s1", "outcome=success", 0, false, true /*dryRun*/, false); err != nil {
+	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=success", 0, false, true /*dryRun*/, false); err != nil {
 		t.Fatalf("runCtlMissionsBulkDelete: %v", err)
 	}
 	if rec.bulkHits != 0 {
@@ -626,10 +627,10 @@ func TestBulkSelectorListingPinsKindMission(t *testing.T) {
 		run      func(ac *appCtx, out, errOut *bytes.Buffer) error
 	}{
 		{"restart", "/v1/missions/bulk-restart", func(ac *appCtx, out, errOut *bytes.Buffer) error {
-			return runCtlMissionsBulkRestart(ac, out, errOut, strings.NewReader(""), "s1", "outcome=failed", 0, false, true /*yes*/)
+			return runCtlMissionsBulkRestart(ac, out, errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, true /*yes*/)
 		}},
 		{"delete", "/v1/missions/bulk-delete", func(ac *appCtx, out, errOut *bytes.Buffer) error {
-			return runCtlMissionsBulkDelete(ac, out, errOut, strings.NewReader(""), "s1", "outcome=failed", 0, false, false, true /*yes*/)
+			return runCtlMissionsBulkDelete(ac, out, errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, false, true /*yes*/)
 		}},
 	}
 	for _, r := range runners {
@@ -674,7 +675,7 @@ func TestBulkDeleteSelectorSkipsExecRows(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), "s1", "outcome=failed", 0, false, false, true /*yes*/); err != nil {
+	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, false, true /*yes*/); err != nil {
 		t.Fatalf("runCtlMissionsBulkDelete: %v (stderr=%q)", err, errOut.String())
 	}
 	if got := stub.MissionRow("named-1"); got == nil || got.Status != "deleting" {
@@ -702,7 +703,7 @@ func TestBulkDeleteAllFailedReturnsError(t *testing.T) {
 	defer stop()
 
 	var out, errOut bytes.Buffer
-	err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), "s1", "outcome=success", 0, false, false, true /*yes*/)
+	err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=success", 0, false, false, true /*yes*/)
 	if err == nil || !strings.Contains(err.Error(), "2 of 2 delete operations failed") {
 		t.Fatalf("want aggregate failure error, got %v", err)
 	}
@@ -816,7 +817,7 @@ func TestCtlMissionsListDefaultKindMission(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1", lettsclient.ListMissionsOpts{Kind: "mission"}, FormatText); err != nil {
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", lettsclient.ListMissionsOpts{Kind: "mission"}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
 	if !strings.Contains(gotQuery, "kind=mission") {
@@ -837,7 +838,7 @@ func TestCtlMissionsListKindAllOmits(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, "s1", lettsclient.ListMissionsOpts{}, FormatText); err != nil {
+	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", lettsclient.ListMissionsOpts{}, FormatText); err != nil {
 		t.Fatalf("runCtlMissionsList: %v", err)
 	}
 	if strings.Contains(gotQuery, "kind=") {
@@ -856,5 +857,126 @@ func TestCtlMissionsListKindUnknownRejected(t *testing.T) {
 	err := cmd.Execute()
 	if mapErrorToExit(err) != 2 {
 		t.Errorf("exit=%d, want 2 (badusage), err=%v", mapErrorToExit(err), err)
+	}
+}
+
+func TestCtlMissionsSingleDryRunDoesNotAct(t *testing.T) {
+	mid := "01900000-0000-7000-8000-000000000001"
+	for _, verb := range []string{"restart", "delete"} {
+		var mutations int
+		mux := http.NewServeMux()
+		mux.HandleFunc("GET /v1/missions/{id}", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"mission_id":"`+mid+`","status":"running","kind":"mission"}`)
+		})
+		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+			mutations++
+			t.Errorf("%s --dry-run sent %s %s", verb, r.Method, r.URL.Path)
+		})
+		srv := httptest.NewServer(mux)
+		cfgPath := writeMultiHostYAML(t, t.TempDir(), map[string]string{"s1": srv.URL})
+
+		hostArgs := []string{"ctl", "missions", verb, mid, "--host=s1", "--dry-run"}
+		if verb == "delete" {
+			hostArgs = append(hostArgs, "--force")
+		}
+		for _, args := range [][]string{
+			hostArgs,
+			{"ctl", "missions", verb, mid, "--dry-run", "--output=json"},
+		} {
+			stdout, _, err := execCLI(t, cfgPath, args...)
+			if err != nil {
+				t.Fatalf("%v: %v", args, err)
+			}
+			if !strings.Contains(stdout, mid) {
+				t.Errorf("%v: stdout %q does not list the mission", args, stdout)
+			}
+		}
+		srv.Close()
+		if mutations != 0 {
+			t.Errorf("%s: %d mutating requests", verb, mutations)
+		}
+	}
+}
+
+func TestCtlMissionsSingleDryRunMissingMissionFails(t *testing.T) {
+	ac, stop := stubAppCtx(t, "s1", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "GET" {
+			t.Errorf("unexpected %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"error":"not_found","message":"mission not found"}`)
+	}))
+	defer stop()
+	var out bytes.Buffer
+	err := runCtlMissionsDryRunSingle(ac, &out, FormatText, "restart", "mid", "s1", nil)
+	var he *lettsclient.HTTPError
+	if !errors.As(err, &he) || he.Status != 404 || out.Len() != 0 {
+		t.Fatalf("err=%v out=%q, want 404 and no output", err, out.String())
+	}
+}
+
+func TestBulkStructuredOutput(t *testing.T) {
+	list := `{"missions":[{"mission_id":"m1","status":"done"},{"mission_id":"m2","status":"done"}],"next_cursor":""}`
+	results := `{"results":[{"id":"m1","ok":true,"mission_id":"n1"},{"id":"m2","ok":false,"error":"conflict"}]}`
+
+	h, _ := bulkStubHandler(t, "/v1/missions/bulk-restart", list, results)
+	ac, stop := stubAppCtx(t, "s1", h)
+	defer stop()
+
+	var out, errOut bytes.Buffer
+	if err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), FormatJSON, "s1", "outcome=failed", 0, true, false); err != nil {
+		t.Fatal(err)
+	}
+	var dry dryRunResult
+	if err := json.Unmarshal(out.Bytes(), &dry); err != nil || !dry.DryRun || len(dry.IDs) != 2 {
+		t.Errorf("dry-run json = %q (err %v)", out.String(), err)
+	}
+
+	out.Reset()
+	errOut.Reset()
+	err := runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), FormatJSON, "s1", "outcome=failed", 0, false, true)
+	if err == nil || !strings.Contains(err.Error(), "1 of 2 restart operations failed") {
+		t.Errorf("err=%v, want partial-failure error", err)
+	}
+	var resp lettsclient.BulkResponse
+	if jerr := json.Unmarshal(out.Bytes(), &resp); jerr != nil || len(resp.Results) != 2 || resp.Results[1].Error != "conflict" {
+		t.Errorf("results json = %q (err %v)", out.String(), jerr)
+	}
+	if strings.Contains(errOut.String(), "FAIL") {
+		t.Errorf("json mode must not print FAIL lines: %q", errOut.String())
+	}
+
+	out.Reset()
+	_ = runCtlMissionsBulkRestart(ac, &out, &errOut, strings.NewReader(""), FormatNDJSON, "s1", "outcome=failed", 0, false, true)
+	if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 2 || !strings.Contains(lines[0], `"mission_id":"n1"`) {
+		t.Errorf("ndjson = %q", out.String())
+	}
+}
+
+func TestBulkEmptySelectionSkipsPost(t *testing.T) {
+	h, rec := bulkStubHandler(t, "/v1/missions/bulk-delete", `{"missions":[],"next_cursor":""}`, `{"results":[]}`)
+	ac, stop := stubAppCtx(t, "s1", h)
+	defer stop()
+	var out, errOut bytes.Buffer
+	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, false, false); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if rec.bulkHits != 0 || strings.Contains(errOut.String(), "[y/N]") {
+		t.Errorf("bulkHits=%d stderr=%q, want no POST and no prompt", rec.bulkHits, errOut.String())
+	}
+}
+
+func TestBulkWarnsWhenSelectionIsTruncated(t *testing.T) {
+	h, _ := bulkStubHandler(t, "/v1/missions/bulk-delete", `{"missions":[{"mission_id":"m1"}],"next_cursor":"c2"}`, `{"results":[]}`)
+	ac, stop := stubAppCtx(t, "s1", h)
+	defer stop()
+	var out, errOut bytes.Buffer
+	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, true, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut.String(), "more missions match") {
+		t.Errorf("stderr=%q, want truncation warning", errOut.String())
 	}
 }

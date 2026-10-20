@@ -20,12 +20,12 @@ func newLogsCmd() *cobra.Command {
 		Short: "Stream mission stdout/stderr/combined (alias for `ctl missions output`)",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ac, _, err := setupAppCtx(cmd)
+			ac, format, err := setupAppCtx(cmd)
 			if err != nil {
 				return err
 			}
 			defer ac.Close()
-			return runCtlMissionsOutput(cmd, ac, args[0], host, stream, follow, match)
+			return runCtlMissionsOutput(cmd, ac, format, readScopesMission, args[0], host, stream, follow, match)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (else by-id fan-out)")

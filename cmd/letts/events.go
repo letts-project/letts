@@ -8,7 +8,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"letts/pkg/lettsclient"
-	"letts/pkg/lettsconfig"
 )
 
 // newEventsCmd builds `letts events <mission_id>` — a low-level helper that
@@ -46,11 +45,10 @@ func runEvents(cmd *cobra.Command, ac *appCtx, missionID, host string, follow bo
 	if host == "" {
 		return NewBadUsageError("--host is required for events (by-id fan-out not implemented)")
 	}
-	c, err := ac.ClientForHost(host, lettsconfig.ScopeDispatch)
-	if err != nil {
-		return err
-	}
-	return streamEventsToStdout(cmd.Context(), c, missionID, follow, from, cmd.OutOrStdout())
+	_, err := callWithKindScopes(ac, host, readScopesMission, func(c *lettsclient.Client) (struct{}, error) {
+		return struct{}{}, streamEventsToStdout(cmd.Context(), c, missionID, follow, from, cmd.OutOrStdout())
+	})
+	return err
 }
 
 // streamEventsToStdout writes each Event from the stream as one NDJSON line.

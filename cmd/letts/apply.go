@@ -216,7 +216,7 @@ func formatApplyResults(w io.Writer, results []applyResult, f Format) error {
 	}
 
 	switch f {
-	case FormatJSON, FormatYAML:
+	case FormatJSON, FormatYAML, FormatNDJSON:
 		type outRow struct {
 			Host  string      `json:"host" yaml:"host"`
 			OK    bool        `json:"ok" yaml:"ok"`
@@ -233,14 +233,8 @@ func formatApplyResults(w io.Writer, results []applyResult, f Format) error {
 				summary[i].Diff = &r.Res.Diff
 			}
 		}
-		var printErr error
-		if f == FormatJSON {
-			printErr = PrintJSON(w, summary)
-		} else {
-			printErr = PrintYAML(w, summary)
-		}
-		if printErr != nil {
-			return printErr
+		if _, err := printList(w, f, summary, summary); err != nil {
+			return err
 		}
 		return applyErr()
 	default:
@@ -298,12 +292,8 @@ func runApplyDryRun(ac *appCtx, w io.Writer, hosts, match []string, f Format) er
 
 	// Output per requested format.
 	switch f {
-	case FormatJSON:
-		if err := PrintJSON(w, rows); err != nil {
-			return err
-		}
-	case FormatYAML:
-		if err := PrintYAML(w, rows); err != nil {
+	case FormatJSON, FormatYAML, FormatNDJSON:
+		if _, err := printList(w, f, rows, rows); err != nil {
 			return err
 		}
 	default:

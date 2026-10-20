@@ -50,17 +50,13 @@ func runCtlDugdalesList(ac *appCtx, w io.Writer, f Format) error {
 		sort.Strings(lanes)
 		out = append(out, row{ID: d.ID, Host: d.Host, URL: d.URL, Labels: d.Labels, Lanes: lanes})
 	}
-	switch f {
-	case FormatJSON:
-		return PrintJSON(w, out)
-	case FormatYAML:
-		return PrintYAML(w, out)
-	default:
-		for _, r := range out {
-			_, _ = fmt.Fprintf(w, "%-12s  host=%-25s  lanes=%v  labels=%v\n", r.ID, r.Host, r.Lanes, r.Labels)
-		}
-		return nil
+	if ok, err := printList(w, f, out, out); ok {
+		return err
 	}
+	for _, r := range out {
+		_, _ = fmt.Fprintf(w, "%-12s  host=%-25s  lanes=%v  labels=%v\n", r.ID, r.Host, r.Lanes, r.Labels)
+	}
+	return nil
 }
 
 func newCtlDugdalesInfoCmd() *cobra.Command {
@@ -84,7 +80,7 @@ func newCtlDugdalesInfoCmd() *cobra.Command {
 }
 
 func runCtlDugdalesInfo(ac *appCtx, w io.Writer, host string, f Format) error {
-	c, err := ac.ClientForHost(host, lettsconfig.ScopeDispatch)
+	c, err := clientForFirstAvailableScope(ac, host, inspectScopes)
 	if err != nil {
 		return err
 	}
@@ -92,17 +88,13 @@ func runCtlDugdalesInfo(ac *appCtx, w io.Writer, host string, f Format) error {
 	if err != nil {
 		return err
 	}
-	switch f {
-	case FormatJSON:
-		return PrintJSON(w, info)
-	case FormatYAML:
-		return PrintYAML(w, info)
-	default:
-		_, _ = fmt.Fprintf(w, "version:   %s\n", info.Version)
-		_, _ = fmt.Fprintf(w, "uptime_s:  %.1f\n", info.UptimeSeconds)
-		_, _ = fmt.Fprintf(w, "queue:     queued=%d running=%d\n", info.QueueSummary.Queued, info.QueueSummary.Running)
-		return nil
+	if ok, err := printRecord(w, f, info); ok {
+		return err
 	}
+	_, _ = fmt.Fprintf(w, "version:   %s\n", info.Version)
+	_, _ = fmt.Fprintf(w, "uptime_s:  %.1f\n", info.UptimeSeconds)
+	_, _ = fmt.Fprintf(w, "queue:     queued=%d running=%d\n", info.QueueSummary.Queued, info.QueueSummary.Running)
+	return nil
 }
 
 func newCtlDugdalesConfigCmd() *cobra.Command {
@@ -134,8 +126,8 @@ func runCtlDugdalesConfig(ac *appCtx, w io.Writer, host string, f Format) error 
 	if err != nil {
 		return err
 	}
-	if f == FormatYAML {
-		return PrintYAML(w, st)
+	if ok, err := printRecord(w, f, st); ok {
+		return err
 	}
 	return PrintJSON(w, st)
 }

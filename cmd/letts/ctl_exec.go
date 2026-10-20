@@ -68,7 +68,7 @@ func newCtlExecListCmd() *cobra.Command {
 				}
 				opts.UntilMs = ms
 			}
-			return runCtlMissionsList(ac, cmd.OutOrStdout(), host, opts, format)
+			return runCtlMissionsList(ac, cmd.OutOrStdout(), cmd.ErrOrStderr(), host, opts, format)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (required)")
@@ -128,31 +128,14 @@ func runCtlExecShow(ac *appCtx, w io.Writer, id, host string, match []string, f 
 	return printMission(w, m, f)
 }
 
-// fetchMissionForExec resolves an exec_id to a single client and record.
-// Mirrors runCtlMissionsShow's branching but returns the *Mission so
-// callers can validate kind before rendering or acting.
+// fetchMissionForExec resolves an exec_id to its record, trying the exec
+// token first, so callers can validate kind before rendering or acting.
 func fetchMissionForExec(ac *appCtx, id, host string, match []string) (*lettsclient.Mission, error) {
-	if host != "" {
-		// By-id exec read with explicit --host accepts exec scope
-		// too (admin fallback), matching the fan-out path below.
-		c, err := clientForFirstAvailableScope(ac, host, []lettsconfig.Scope{lettsconfig.ScopeExec, lettsconfig.ScopeAdmin})
-		if err != nil {
-			return nil, err
-		}
-		return lettsclient.GetMission(c, id)
-	}
-	// Prefer exec scope for kind=exec reads so a CLI with
-	// only an exec token still works; fall back to admin internally.
-	m, _, err := FanOutByIDForScope(ac, match, lettsconfig.ScopeExec, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
-		return lettsclient.GetMission(c, id)
-	})
-	return m, err
+	return getMissionByID(ac, readScopesExec, id, host, match)
 }
 
-// newCtlExecOutputCmd binds `letts ctl exec output <exec_id>`. The /output
-// endpoint is kind-agnostic at the daemon, so we delegate to
-// runCtlMissionsOutput which already handles single-host vs by-id fan-out,
-// streaming via io.Copy, and --follow.
+// newCtlExecOutputCmd binds `letts ctl exec output <exec_id>`: the same
+// /output read as `ctl missions output`, trying the exec token first.
 func newCtlExecOutputCmd() *cobra.Command {
 	var host, stream string
 	var follow bool
@@ -162,12 +145,12 @@ func newCtlExecOutputCmd() *cobra.Command {
 		Short: "Stream exec stdout/stderr/combined",
 		Args:  exactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ac, _, err := setupAppCtx(cmd)
+			ac, format, err := setupAppCtx(cmd)
 			if err != nil {
 				return err
 			}
 			defer ac.Close()
-			return runCtlMissionsOutput(cmd, ac, args[0], host, stream, follow, match)
+			return runCtlMissionsOutput(cmd, ac, format, readScopesExec, args[0], host, stream, follow, match)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (else by-id fan-out)")
@@ -193,7 +176,7 @@ func newCtlExecRestartCmd() *cobra.Command {
 				return err
 			}
 			defer ac.Close()
-			return runCtlExecRestart(ac, cmd.OutOrStdout(), args[0], host, format)
+			return runCtlExecRestart(ac, cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], host, format)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (required)")
@@ -206,7 +189,7 @@ func newCtlExecRestartCmd() *cobra.Command {
 // non-nil error so the CLI exits non-zero. All other transport errors
 // flow through wrapExecTransport for the standard exec exit-code mapping
 // (→ 255).
-func runCtlExecRestart(ac *appCtx, w io.Writer, id, host string, f Format) error {
+func runCtlExecRestart(ac *appCtx, w, errW io.Writer, id, host string, f Format) error {
 	if host == "" {
 		return NewBadUsageError("--host is required for ctl exec restart")
 	}
@@ -218,7 +201,7 @@ func runCtlExecRestart(ac *appCtx, w io.Writer, id, host string, f Format) error
 	if err != nil {
 		var he *lettsclient.HTTPError
 		if errors.As(err, &he) && he.Status == 409 && he.Code == "input_artifacts_expired" {
-			_, _ = fmt.Fprintf(w, "Cannot restart %s — input artifacts have expired:\n", id)
+			_, _ = fmt.Fprintf(errW, "Cannot restart %s — input artifacts have expired:\n", id)
 			if details, ok := he.Details.(map[string]any); ok {
 				staging, _ := details["staging_id"].(string)
 				role, _ := details["role"].(string)
@@ -226,23 +209,19 @@ func runCtlExecRestart(ac *appCtx, w io.Writer, id, host string, f Format) error
 					role = "?"
 				}
 				if staging != "" {
-					_, _ = fmt.Fprintf(w, "  - %s: %s\n", role, staging)
+					_, _ = fmt.Fprintf(errW, "  - %s: %s\n", role, staging)
 				}
 			}
-			_, _ = fmt.Fprintln(w, "Original exec was retained for exec_failed_ttl; to retry, dispatch a fresh exec with the original payload.")
+			_, _ = fmt.Fprintln(errW, "Original exec was retained for exec_failed_ttl; to retry, dispatch a fresh exec with the original payload.")
 			return fmt.Errorf("input artifacts expired")
 		}
 		return wrapExecTransport(err)
 	}
-	switch f {
-	case FormatJSON:
-		return PrintJSON(w, resp)
-	case FormatYAML:
-		return PrintYAML(w, resp)
-	default:
-		_, _ = fmt.Fprintf(w, "%s\t%s\trestarted_from=%s\n", resp.MissionID, resp.Status, resp.RestartedFrom)
-		return nil
+	if ok, err := printRecord(w, f, resp); ok {
+		return err
 	}
+	_, _ = fmt.Fprintf(w, "%s\t%s\trestarted_from=%s\n", resp.MissionID, resp.Status, resp.RestartedFrom)
+	return nil
 }
 
 // newCtlExecKillCmd binds `letts ctl exec kill <exec_id>`. The /kill

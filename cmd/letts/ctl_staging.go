@@ -37,12 +37,12 @@ func newCtlStagingUploadCmd() *cobra.Command {
 			if host == "" {
 				return NewBadUsageError("--host is required for ctl staging upload")
 			}
-			ac, _, err := setupAppCtx(cmd)
+			ac, format, err := setupAppCtx(cmd)
 			if err != nil {
 				return err
 			}
 			defer ac.Close()
-			return runCtlStagingUpload(ac, cmd.OutOrStdout(), host, args[0])
+			return runCtlStagingUpload(ac, cmd.OutOrStdout(), format, host, args[0])
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (required)")
@@ -51,8 +51,9 @@ func newCtlStagingUploadCmd() *cobra.Command {
 
 // runCtlStagingUpload mints a UUIDv7, HEADs and PUTs the file via
 // lettsclient.UploadFile, and prints "staging_id\tsha256\tsize" so shell
-// pipelines can grab any of the three with `cut`.
-func runCtlStagingUpload(ac *appCtx, w io.Writer, host, path string) error {
+// pipelines can grab any of the three with `cut` (a record in json, yaml and
+// ndjson).
+func runCtlStagingUpload(ac *appCtx, w io.Writer, f Format, host, path string) error {
 	// PUT/HEAD /v1/staging is dispatch/exec/admin (admin
 	// is a superset). Pick the first scope the operator has a token
 	// for so dispatch/exec-only users can upload.
@@ -64,6 +65,14 @@ func runCtlStagingUpload(ac *appCtx, w io.Writer, host, path string) error {
 	stagingID := ids.NewUUIDv7()
 	id, sha, size, err := lettsclient.UploadFile(c, stagingID, path)
 	if err != nil {
+		return err
+	}
+	rec := struct {
+		StagingID string `json:"staging_id"`
+		SHA256    string `json:"sha256"`
+		Size      int64  `json:"size"`
+	}{id, sha, size}
+	if ok, err := printRecord(w, f, rec); ok {
 		return err
 	}
 	_, _ = fmt.Fprintf(w, "%s\t%s\t%d\n", id, sha, size)
@@ -159,9 +168,8 @@ func runCtlStagingDelete(ac *appCtx, host, id string, force bool) error {
 	return lettsclient.DeleteStaging(c, id, force)
 }
 
-// newCtlStagingListCmd binds `letts ctl staging list`. The common case is
-// just --mission-id, but ref-kind/cursor/limit are accepted because the
-// daemon supports them and it keeps the CLI in sync with the HTTP surface.
+// newCtlStagingListCmd binds `letts ctl staging list`. The daemon requires
+// --mission-id; ref-kind/cursor/limit narrow or page the listing.
 func newCtlStagingListCmd() *cobra.Command {
 	var host, missionID, refKind, cursor string
 	var limit int
@@ -171,6 +179,9 @@ func newCtlStagingListCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return NewBadUsageError("--host is required for ctl staging list")
+			}
+			if missionID == "" {
+				return NewBadUsageError("--mission-id is required for ctl staging list")
 			}
 			ac, format, err := setupAppCtx(cmd)
 			if err != nil {
@@ -183,11 +194,11 @@ func newCtlStagingListCmd() *cobra.Command {
 				Cursor:    cursor,
 				Limit:     limit,
 			}
-			return runCtlStagingList(ac, cmd.OutOrStdout(), host, opts, format)
+			return runCtlStagingList(ac, cmd.OutOrStdout(), cmd.ErrOrStderr(), host, opts, format)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (required)")
-	c.Flags().StringVar(&missionID, "mission-id", "", "filter by mission")
+	c.Flags().StringVar(&missionID, "mission-id", "", "mission whose artifacts to list (required)")
 	c.Flags().StringVar(&refKind, "ref-kind", "", "filter by ref kind (input|output|script)")
 	c.Flags().IntVar(&limit, "limit", 0, "max rows (default daemon-side)")
 	c.Flags().StringVar(&cursor, "cursor", "", "pagination cursor from a previous next_cursor")
@@ -195,8 +206,9 @@ func newCtlStagingListCmd() *cobra.Command {
 }
 
 // runCtlStagingList GETs /v1/staging and renders. Text mode is a fixed-width
-// table sorted by the daemon; cursor footer mirrors the missions list.
-func runCtlStagingList(ac *appCtx, w io.Writer, host string, opts lettsclient.ListStagingOpts, f Format) error {
+// table sorted by the daemon; cursor footer mirrors the missions list
+// (ndjson writes the cursor to errW).
+func runCtlStagingList(ac *appCtx, w, errW io.Writer, host string, opts lettsclient.ListStagingOpts, f Format) error {
 	c, err := ac.ClientForHost(host, lettsconfig.ScopeAdmin)
 	if err != nil {
 		return err
@@ -205,19 +217,18 @@ func runCtlStagingList(ac *appCtx, w io.Writer, host string, opts lettsclient.Li
 	if err != nil {
 		return err
 	}
-	switch f {
-	case FormatJSON:
-		return PrintJSON(w, resp)
-	case FormatYAML:
-		return PrintYAML(w, resp)
-	default:
-		_, _ = fmt.Fprintf(w, "%-40s  %-12s  %-12s  %-15s\n", "STAGING_ID", "SIZE", "STATE", "REF_KIND")
-		for _, s := range resp.Staging {
-			_, _ = fmt.Fprintf(w, "%-40s  %-12d  %-12s  %-15s\n", s.StagingID, s.Size, s.State, s.RefKind)
+	if ok, err := printList(w, f, resp, resp.Staging); ok {
+		if err == nil && f == FormatNDJSON && resp.NextCursor != "" {
+			_, _ = fmt.Fprintf(errW, "cursor: %s\n", resp.NextCursor)
 		}
-		if resp.NextCursor != "" {
-			_, _ = fmt.Fprintf(w, "\ncursor: %s\n", resp.NextCursor)
-		}
-		return nil
+		return err
 	}
+	_, _ = fmt.Fprintf(w, "%-40s  %-12s  %-12s  %-15s\n", "STAGING_ID", "SIZE", "STATE", "REF_KIND")
+	for _, s := range resp.Staging {
+		_, _ = fmt.Fprintf(w, "%-40s  %-12d  %-12s  %-15s\n", s.StagingID, s.Size, s.State, s.RefKind)
+	}
+	if resp.NextCursor != "" {
+		_, _ = fmt.Fprintf(w, "\ncursor: %s\n", resp.NextCursor)
+	}
+	return nil
 }

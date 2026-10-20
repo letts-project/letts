@@ -39,7 +39,7 @@ func newCtlLanesListCmd() *cobra.Command {
 }
 
 func runCtlLanesList(ac *appCtx, w io.Writer, host string, f Format) error {
-	c, err := ac.ClientForHost(host, lettsconfig.ScopeDispatch)
+	c, err := clientForFirstAvailableScope(ac, host, inspectScopes)
 	if err != nil {
 		return err
 	}
@@ -47,18 +47,14 @@ func runCtlLanesList(ac *appCtx, w io.Writer, host string, f Format) error {
 	if err != nil {
 		return err
 	}
-	switch f {
-	case FormatJSON:
-		return PrintJSON(w, lanes)
-	case FormatYAML:
-		return PrintYAML(w, lanes)
-	default:
-		_, _ = fmt.Fprintf(w, "%-20s  %-12s  %-6s  %-8s  %-8s\n", "LANE", "CONCURRENCY", "PAUSED", "QUEUED", "RUNNING")
-		for _, l := range lanes {
-			_, _ = fmt.Fprintf(w, "%-20s  %-12d  %-6t  %-8d  %-8d\n", l.Name, l.Concurrency, l.Paused, l.Queued, l.Running)
-		}
-		return nil
+	if ok, err := printList(w, f, lanes, lanes); ok {
+		return err
 	}
+	_, _ = fmt.Fprintf(w, "%-20s  %-12s  %-6s  %-8s  %-8s\n", "LANE", "CONCURRENCY", "PAUSED", "QUEUED", "RUNNING")
+	for _, l := range lanes {
+		_, _ = fmt.Fprintf(w, "%-20s  %-12d  %-6t  %-8d  %-8d\n", l.Name, l.Concurrency, l.Paused, l.Queued, l.Running)
+	}
+	return nil
 }
 
 func newCtlLanesPauseCmd() *cobra.Command {

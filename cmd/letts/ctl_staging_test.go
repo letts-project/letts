@@ -47,7 +47,7 @@ func TestCtlStagingUpload(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlStagingUpload(ac, &out, "s1", path); err != nil {
+	if err := runCtlStagingUpload(ac, &out, FormatText, "s1", path); err != nil {
 		t.Fatalf("runCtlStagingUpload: %v", err)
 	}
 	if headCalls.Load() != 1 || putCalls.Load() != 1 {
@@ -201,7 +201,7 @@ func TestCtlStagingList(t *testing.T) {
 
 	var out bytes.Buffer
 	opts := lettsclient.ListStagingOpts{MissionID: "m1"}
-	if err := runCtlStagingList(ac, &out, "s1", opts, FormatText); err != nil {
+	if err := runCtlStagingList(ac, &out, io.Discard, "s1", opts, FormatText); err != nil {
 		t.Fatalf("runCtlStagingList: %v", err)
 	}
 	if !strings.Contains(gotQuery, "mission_id=m1") {
@@ -240,7 +240,7 @@ func TestCtlStagingListJSONFormat(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlStagingList(ac, &out, "s1", lettsclient.ListStagingOpts{}, FormatJSON); err != nil {
+	if err := runCtlStagingList(ac, &out, io.Discard, "s1", lettsclient.ListStagingOpts{}, FormatJSON); err != nil {
 		t.Fatalf("runCtlStagingList: %v", err)
 	}
 	var got lettsclient.ListStagingResponse
@@ -262,7 +262,7 @@ func TestCtlStagingListNoCursorOmitsFooter(t *testing.T) {
 	defer stop()
 
 	var out bytes.Buffer
-	if err := runCtlStagingList(ac, &out, "s1", lettsclient.ListStagingOpts{}, FormatText); err != nil {
+	if err := runCtlStagingList(ac, &out, io.Discard, "s1", lettsclient.ListStagingOpts{}, FormatText); err != nil {
 		t.Fatalf("runCtlStagingList: %v", err)
 	}
 	if strings.Contains(out.String(), "cursor:") {
