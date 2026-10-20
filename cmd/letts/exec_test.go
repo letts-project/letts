@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -868,5 +869,39 @@ func TestExecAutoSingleEmptyStdinDowngradesToNone(t *testing.T) {
 	}
 	if hs.stagingPuts != 0 {
 		t.Errorf("stagingPuts=%d, want 0 (empty payload skipped)", hs.stagingPuts)
+	}
+}
+
+func TestExecRejectsBadFlagsBeforeDispatch(t *testing.T) {
+	for _, ef := range []*execFlags{
+		{lane: "light", host: "s1", argv: []string{"x"}, outputFmt: "yaml"},
+		{lane: "light", host: "s1", argv: []string{"x"}, outputFmt: "text", detach: true},
+		{lane: "light", host: "s1", argv: []string{"x"}, waitTimeout: "5 minutes"},
+		{lane: "light", host: "s1", argv: []string{"x"}, waitTimeout: "-1s"},
+	} {
+		hs := newExecHostStub(t, "s1", execHostPlan{doneOutcome: "success"})
+		_, _, err := runExecForTest(t, hs, ef)
+		if got := mapExecErr(t, err); got != 2 {
+			t.Errorf("%+v: exit=%d err=%v, want 2", ef, got, err)
+		}
+		hs.mu.Lock()
+		n := len(hs.dispatched)
+		hs.mu.Unlock()
+		if n != 0 {
+			t.Errorf("%+v: dispatched %d execs before rejecting flags", ef, n)
+		}
+		hs.close()
+	}
+}
+
+func TestComputeWaitDeadlineZeroAndNegative(t *testing.T) {
+	for _, v := range []string{"0s", "0m", "0h"} {
+		if d, err := computeWaitDeadline(v, "5m", time.Now()); err != nil || !d.IsZero() {
+			t.Errorf("%s: deadline=%v err=%v, want infinite", v, d, err)
+		}
+	}
+	var bu *BadUsageError
+	if _, err := computeWaitDeadline("-5s", "", time.Now()); !errors.As(err, &bu) {
+		t.Errorf("-5s: err=%v, want BadUsage", err)
 	}
 }

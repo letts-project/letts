@@ -60,25 +60,37 @@ func (w *prefixedHostWriter) Write(p []byte) (int, error) {
 		if nl < 0 {
 			break
 		}
-		line := b[:nl]
-		// Build "[host][label] line\n" once, write atomically under sink mu.
-		var sb strings.Builder
-		sb.WriteString("[")
-		sb.WriteString(w.host)
-		sb.WriteString("]")
-		if w.label != "" {
-			sb.WriteString(w.label)
-		}
-		sb.WriteString(" ")
-		sb.Write(line)
-		sb.WriteByte('\n')
-		w.sink.mu.Lock()
-		_, _ = w.sink.w.Write([]byte(sb.String()))
-		w.sink.mu.Unlock()
-		// Advance partial buffer past this line + newline byte.
+		w.emit(b[:nl])
 		w.partial.Next(nl + 1)
 	}
 	return len(p), nil
+}
+
+// Flush emits a buffered unterminated last line, if any.
+func (w *prefixedHostWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.partial.Len() > 0 {
+		w.emit(w.partial.Bytes())
+		w.partial.Reset()
+	}
+}
+
+// emit writes "[host][label] line\n" atomically under the sink mutex.
+func (w *prefixedHostWriter) emit(line []byte) {
+	var sb strings.Builder
+	sb.WriteString("[")
+	sb.WriteString(w.host)
+	sb.WriteString("]")
+	if w.label != "" {
+		sb.WriteString(w.label)
+	}
+	sb.WriteString(" ")
+	sb.Write(line)
+	sb.WriteByte('\n')
+	w.sink.mu.Lock()
+	_, _ = w.sink.w.Write([]byte(sb.String()))
+	w.sink.mu.Unlock()
 }
 
 // ndjsonSink wraps a mutex-protected writer; one JSON line per Emit call
@@ -136,14 +148,28 @@ func (w *ndjsonOutputWriter) Write(p []byte) (int, error) {
 		if nl < 0 {
 			break
 		}
-		_ = w.sink.Emit(map[string]any{
-			"host":   w.host,
-			"stream": w.stream,
-			"line":   string(b[:nl]),
-		})
+		w.emit(b[:nl])
 		w.partial.Next(nl + 1)
 	}
 	return len(p), nil
+}
+
+// Flush emits a buffered unterminated last line, if any.
+func (w *ndjsonOutputWriter) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.partial.Len() > 0 {
+		w.emit(w.partial.Bytes())
+		w.partial.Reset()
+	}
+}
+
+func (w *ndjsonOutputWriter) emit(line []byte) {
+	_ = w.sink.Emit(map[string]any{
+		"host":   w.host,
+		"stream": w.stream,
+		"line":   string(line),
+	})
 }
 
 // execJSONResultSuccess and execJSONResultError are the sum-type variants

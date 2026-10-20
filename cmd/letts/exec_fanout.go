@@ -396,6 +396,11 @@ func runExecHostLifecycle(ctx context.Context, c *lettsclient.Client, ef *execFl
 		cancelTail()
 		<-drained
 	}
+	for _, w := range []io.Writer{stdoutW, stderrW} {
+		if fl, ok := w.(interface{ Flush() }); ok {
+			fl.Flush()
+		}
+	}
 
 	// bufBytes returns either the capBuffer's contents or nil for the live
 	// path (where bytes already streamed out through the sink).

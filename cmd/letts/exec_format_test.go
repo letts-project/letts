@@ -289,3 +289,22 @@ func TestFanOutJSONStdoutTruncation(t *testing.T) {
 		t.Errorf("stdout_truncated=%v", got.Results[0]["stdout_truncated"])
 	}
 }
+
+func TestLineWritersFlushUnterminatedLine(t *testing.T) {
+	var buf bytes.Buffer
+	pw := newPrefixedSink(&buf).WriterFor("s1", "[stderr]").(*prefixedHostWriter)
+	_, _ = pw.Write([]byte("a\nlast"))
+	pw.Flush()
+	pw.Flush()
+	if buf.String() != "[s1][stderr] a\n[s1][stderr] last\n" {
+		t.Errorf("prefix: %q", buf.String())
+	}
+
+	buf.Reset()
+	nw := &ndjsonOutputWriter{sink: newNDJSONSink(&buf), host: "s1", stream: "stdout"}
+	_, _ = nw.Write([]byte("a\nlast"))
+	nw.Flush()
+	if buf.String() != `{"host":"s1","line":"a","stream":"stdout"}`+"\n"+`{"host":"s1","line":"last","stream":"stdout"}`+"\n" {
+		t.Errorf("ndjson: %q", buf.String())
+	}
+}

@@ -101,6 +101,15 @@ Exactly one of --host, --match, --all must be specified. --lane is required.`,
 // runExec is the top-level dispatcher. Validates flags, resolves targets,
 // then routes to runExecOne (single host) or runExecFanOut.
 func runExec(cmd *cobra.Command, ac *appCtx, ef *execFlags, f Format) error {
+	switch ef.outputFmt {
+	case "", "raw", "prefix", "json", "ndjson":
+	default:
+		return NewBadUsageError(fmt.Sprintf("--output: unknown format %q (want raw|prefix|json|ndjson)", ef.outputFmt))
+	}
+	if _, err := computeWaitDeadline(ef.waitTimeout, ef.timeout, time.Now()); err != nil {
+		return err
+	}
+
 	// Pre-validate --out keys before any HTTP/staging work (mirrors --in
 	// below). parseExecKV enforces the key regex, reserved __ prefix, and
 	// duplicates; running it once up-front turns a typo into a single
@@ -193,13 +202,13 @@ func runExec(cmd *cobra.Command, ac *appCtx, ef *execFlags, f Format) error {
 }
 
 // computeWaitDeadline applies the --wait-timeout default rule:
-//   - explicit "0"     → infinite (zero time.Time)
+//   - explicit zero ("0", "0s", …) → infinite (zero time.Time)
 //   - explicit value   → now + value
 //   - unset, no -timeout → infinite
 //   - unset, --timeout → now + timeout + 30s grace
 //
-// Returns zero time.Time if no deadline. On parse error returns a
-// BadUsageError.
+// Returns zero time.Time if no deadline. On a parse error or a negative
+// --wait-timeout returns a BadUsageError.
 func computeWaitDeadline(waitTimeoutFlag, timeoutFlag string, now time.Time) (time.Time, error) {
 	if waitTimeoutFlag == "0" {
 		return time.Time{}, nil // explicit infinite
@@ -208,6 +217,12 @@ func computeWaitDeadline(waitTimeoutFlag, timeoutFlag string, now time.Time) (ti
 		d, err := time.ParseDuration(waitTimeoutFlag)
 		if err != nil {
 			return time.Time{}, NewBadUsageError("--wait-timeout: " + err.Error())
+		}
+		if d < 0 {
+			return time.Time{}, NewBadUsageError("--wait-timeout: must not be negative")
+		}
+		if d == 0 {
+			return time.Time{}, nil
 		}
 		return now.Add(d), nil
 	}
