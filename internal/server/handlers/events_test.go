@@ -426,3 +426,19 @@ func TestEventsStreamLogsFlusherFallback(t *testing.T) {
 		t.Errorf("missing flusher_unavailable warning; logs=%s", logs)
 	}
 }
+
+// TestEventsStreamAbortsWhenFileUnreadable: a read failure after the 200
+// header aborts the response.
+func TestEventsStreamAbortsWhenFileUnreadable(t *testing.T) {
+	h, missionID, _ := setupEventsTest(t)
+	mux := http.NewServeMux()
+	h.Register(mux)
+	req := withScope(httptest.NewRequest("GET", "/v1/missions/"+missionID+"/events", nil), middleware.ScopeDispatch)
+	defer func() {
+		if r := recover(); r != http.ErrAbortHandler {
+			t.Fatalf("recovered %v, want http.ErrAbortHandler", r)
+		}
+	}()
+	mux.ServeHTTP(httptest.NewRecorder(), req)
+	t.Fatal("handler returned normally for a missing events file")
+}

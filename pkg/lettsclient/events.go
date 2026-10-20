@@ -69,47 +69,93 @@ type StreamOpts struct {
 }
 
 // StreamEvents opens the events stream and invokes fn for each event in
-// order. If Follow is true and the stream closes without a terminal done
-// event, StreamEvents reconnects with from=<last seq>.
+// order. Without Follow it returns once the current events have been read.
+// With Follow it reconnects with from=<last seq> until the terminal done
+// event, retrying transport errors and 5xx/408/429 responses; other 4xx
+// responses, errors from fn and undecodable events are returned. A reconnect
+// that yields no new event waits ReconnectBackoff; once the mission is done,
+// a further read that still yields no done event is an error (its done event
+// lies at or before the cursor).
 func StreamEvents(ctx context.Context, c *Client, missionID string, opts StreamOpts, fn func(Event) error) error {
 	if opts.ReconnectBackoff <= 0 {
 		opts.ReconnectBackoff = 1 * time.Second
 	}
 	lastSeq := opts.From
+	sawDone := false
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		terminal, lastSeen, err := streamOnce(ctx, c, missionID, opts.Follow, lastSeq, fn)
-		if lastSeen > lastSeq {
+		progressed := lastSeen > lastSeq
+		if progressed {
 			lastSeq = lastSeen
+			sawDone = false
 		}
 		if terminal {
 			return nil
 		}
+		var fatal *fatalStreamError
+		if errors.As(err, &fatal) {
+			return fatal.err
+		}
 		if err != nil {
-			// 404 (mission GC'd) / 410 (deleting) are terminal — the
-			// mission is gone, not a transient disconnect. Return instead of
-			// reconnecting once per ReconnectBackoff forever (which, combined
-			// with run's default-infinite wait, would spin until Ctrl-C).
 			var he *HTTPError
-			if errors.As(err, &he) && (he.Status == 404 || he.Status == 410) {
+			if errors.As(err, &he) && he.Status/100 == 4 && he.Status != 408 && he.Status != 429 {
 				return err
 			}
 			if !opts.Follow {
 				return err
 			}
+		} else if !opts.Follow {
+			return nil
+		} else if !progressed {
+			m, gerr := getMissionCtx(ctx, c, missionID)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if gerr == nil && m.Status == "done" {
+				if sawDone {
+					return fmt.Errorf("mission %s is done but has no done event after seq %d", missionID, lastSeq)
+				}
+				sawDone = true
+				continue
+			}
+		}
+		if err != nil || !progressed {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
 			case <-time.After(opts.ReconnectBackoff):
 			}
-			continue
-		}
-		if !opts.Follow {
-			return fmt.Errorf("event stream ended without terminal done event")
 		}
 	}
+}
+
+// fatalStreamError marks a streamOnce failure that reconnecting cannot fix.
+type fatalStreamError struct{ err error }
+
+func (e *fatalStreamError) Error() string { return e.err.Error() }
+func (e *fatalStreamError) Unwrap() error { return e.err }
+
+func getMissionCtx(ctx context.Context, c *Client, missionID string) (*Mission, error) {
+	req, err := c.newRequest("GET", "/v1/missions/"+url.PathEscape(missionID), nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.hc.Do(req.WithContext(ctx))
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode/100 != 2 {
+		return nil, decodeHTTPError(resp, req.URL.String())
+	}
+	var m Mission
+	if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 func streamOnce(ctx context.Context, c *Client, missionID string, follow bool, from int64, fn func(Event) error) (terminal bool, lastSeq int64, err error) {
@@ -146,11 +192,11 @@ func streamOnce(ctx context.Context, c *Client, missionID string, follow bool, f
 		}
 		var ev Event
 		if err := json.Unmarshal(line, &ev); err != nil {
-			return false, lastSeq, fmt.Errorf("decode event: %w", err)
+			return false, lastSeq, &fatalStreamError{fmt.Errorf("decode event: %w", err)}
 		}
 		ev.Raw = append([]byte(nil), line...)
 		if err := fn(ev); err != nil {
-			return false, lastSeq, err
+			return false, lastSeq, &fatalStreamError{err}
 		}
 		if ev.Seq > lastSeq {
 			lastSeq = ev.Seq
@@ -160,6 +206,9 @@ func streamOnce(ctx context.Context, c *Client, missionID string, follow bool, f
 		}
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		if errors.Is(err, bufio.ErrTooLong) {
+			return false, lastSeq, &fatalStreamError{err}
+		}
 		return false, lastSeq, err
 	}
 	return false, lastSeq, nil

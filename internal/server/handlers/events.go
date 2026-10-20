@@ -122,18 +122,23 @@ func (h *EventsHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		PollEvery: 100 * time.Millisecond,
 	}
 
-	// Stream events to the response.
-	_ = eventfile.Stream(r.Context(), parentDir, id, opts, func(line []byte) error {
-		// Write line and newline.
-		if _, err := w.Write(line); err != nil {
-			return err
+	var writeErr error
+	err = eventfile.Stream(r.Context(), parentDir, id, opts, func(line []byte) error {
+		if _, writeErr = w.Write(line); writeErr != nil {
+			return writeErr
 		}
-		if _, err := w.Write([]byte("\n")); err != nil {
-			return err
+		if _, writeErr = w.Write([]byte("\n")); writeErr != nil {
+			return writeErr
 		}
 		if canFlush {
 			flusher.Flush()
 		}
 		return nil
 	})
+	if err != nil && writeErr == nil && r.Context().Err() == nil {
+		h.logger().Warn("events_stream_failed", "mission_id", id, "error", err)
+		// Aborting leaves the chunked body unterminated, so the client sees
+		// the truncated stream as an error.
+		panic(http.ErrAbortHandler)
+	}
 }

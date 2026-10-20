@@ -3,6 +3,7 @@ package lettsclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -149,5 +150,161 @@ func TestEventDecodeRunning(t *testing.T) {
 	}
 	if e.Pid != 4242 || e.Time != 1714600001000 || e.TimeStarted != 1714600001000 {
 		t.Errorf("running event = %+v", e)
+	}
+}
+
+func TestStreamEventsFollowStopsOnClientError(t *testing.T) {
+	for _, status := range []int{401, 403, 400} {
+		var hits atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"error":"forbidden_kind","message":"no"}`)
+		}))
+		c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := StreamEvents(ctx, c, "abc", StreamOpts{Follow: true, ReconnectBackoff: time.Millisecond}, func(Event) error { return nil })
+		cancel()
+		srv.Close()
+		var he *HTTPError
+		if !errors.As(err, &he) || he.Status != status {
+			t.Errorf("status %d: err=%v, want the HTTPError", status, err)
+		}
+		if hits.Load() != 1 {
+			t.Errorf("status %d: %d requests, want 1", status, hits.Load())
+		}
+	}
+}
+
+func TestStreamEventsFollowRetriesServerErrors(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hits.Add(1) < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = io.WriteString(w, `{"seq":1,"event":"done","outcome":"success"}`+"\n")
+	}))
+	defer srv.Close()
+	c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+	if err := StreamEvents(context.Background(), c, "abc", StreamOpts{Follow: true, ReconnectBackoff: time.Millisecond}, func(Event) error { return nil }); err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if hits.Load() != 3 {
+		t.Errorf("hits=%d, want 3", hits.Load())
+	}
+}
+
+func TestStreamEventsSnapshotWithoutDoneSucceeds(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"seq":1,"event":"queued"}`+"\n"+`{"seq":2,"event":"running"}`+"\n")
+	}))
+	defer srv.Close()
+	c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+	var n int
+	if err := StreamEvents(context.Background(), c, "abc", StreamOpts{}, func(Event) error { n++; return nil }); err != nil || n != 2 {
+		t.Fatalf("err=%v events=%d, want nil and 2", err, n)
+	}
+}
+
+func TestStreamEventsFollowPastDoneFails(t *testing.T) {
+	var streams atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/missions/abc/events" {
+			streams.Add(1)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"mission_id":"abc","status":"done"}`)
+	}))
+	defer srv.Close()
+	c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err := StreamEvents(ctx, c, "abc", StreamOpts{Follow: true, From: 9, ReconnectBackoff: time.Millisecond}, func(Event) error { return nil })
+	if err == nil || ctx.Err() != nil {
+		t.Fatalf("err=%v ctxErr=%v, want a prompt error", err, ctx.Err())
+	}
+	if streams.Load() != 2 {
+		t.Errorf("streams=%d, want 2 (one more read after seeing done)", streams.Load())
+	}
+}
+
+func TestStreamEventsFollowDoneRaceRereads(t *testing.T) {
+	var streams atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/missions/abc/events" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"mission_id":"abc","status":"done"}`)
+			return
+		}
+		switch streams.Add(1) {
+		case 1:
+			_, _ = io.WriteString(w, `{"seq":1,"event":"queued"}`+"\n")
+		case 3:
+			_, _ = io.WriteString(w, `{"seq":2,"event":"done","outcome":"success"}`+"\n")
+		}
+	}))
+	defer srv.Close()
+	c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+	var got []string
+	err := StreamEvents(context.Background(), c, "abc", StreamOpts{Follow: true, ReconnectBackoff: time.Millisecond}, func(e Event) error {
+		got = append(got, e.Event)
+		return nil
+	})
+	if err != nil || len(got) != 2 || got[1] != "done" {
+		t.Fatalf("err=%v events=%v, want queued then done", err, got)
+	}
+}
+
+func TestStreamEventsFollowReturnsCallbackAndDecodeErrors(t *testing.T) {
+	sentinel := errors.New("stop")
+	for _, tc := range []struct {
+		body string
+		fn   func(Event) error
+		want func(error) bool
+	}{
+		{`{"seq":1,"event":"queued"}` + "\n", func(Event) error { return sentinel }, func(err error) bool { return errors.Is(err, sentinel) }},
+		{"not json\n", func(Event) error { return nil }, func(err error) bool { return err != nil }},
+	} {
+		var hits atomic.Int64
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			_, _ = io.WriteString(w, tc.body)
+		}))
+		c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		err := StreamEvents(ctx, c, "abc", StreamOpts{Follow: true, ReconnectBackoff: time.Millisecond}, tc.fn)
+		timedOut := ctx.Err() != nil
+		cancel()
+		srv.Close()
+		if !tc.want(err) || timedOut || hits.Load() != 1 {
+			t.Errorf("body %q: err=%v hits=%d, want a prompt error after one request", tc.body, err, hits.Load())
+		}
+	}
+}
+
+func TestStreamEventsFollowIdleCloseBacksOff(t *testing.T) {
+	var streams atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/missions/abc/events" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"mission_id":"abc","status":"running"}`)
+			return
+		}
+		if streams.Add(1) == 3 {
+			_, _ = io.WriteString(w, `{"seq":5,"event":"done","outcome":"success"}`+"\n")
+		}
+	}))
+	defer srv.Close()
+	c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+	start := time.Now()
+	err := StreamEvents(context.Background(), c, "abc", StreamOpts{Follow: true, ReconnectBackoff: 50 * time.Millisecond}, func(Event) error { return nil })
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 100*time.Millisecond {
+		t.Errorf("reconnected after %v, want two backoffs", elapsed)
 	}
 }
