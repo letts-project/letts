@@ -43,7 +43,7 @@ type runFlags struct {
 	waitTimeout string   // client-side wait deadline
 	noProgress  bool     // --no-progress: hide progress events
 	quiet       bool     // from global --quiet: suppress event/log tailing
-	logs        bool     // --logs: show stderr logs even in --output=json
+	logs        bool     // --logs: show stderr logs even in --output=json|yaml
 	missionID   string
 }
 
@@ -75,7 +75,7 @@ func newRunCmd() *cobra.Command {
 	c.Flags().StringVar(&rf.timeout, "timeout", "", "mission timeout, e.g. 5m")
 	c.Flags().StringVar(&rf.waitTimeout, "wait-timeout", "", "client wait timeout, e.g. 1m")
 	c.Flags().BoolVar(&rf.noProgress, "no-progress", false, "do not show progress events")
-	c.Flags().BoolVar(&rf.logs, "logs", false, "show stderr logs even in --output=json")
+	c.Flags().BoolVar(&rf.logs, "logs", false, "show stderr logs even in --output=json|yaml")
 	c.Flags().StringVar(&rf.missionID, "mission-id", "", "override mission id (UUID v7)")
 	return c
 }
@@ -89,6 +89,9 @@ func newRunCmd() *cobra.Command {
 func runCore(cmd *cobra.Command, ac *appCtx, rf *runFlags, f Format) error {
 	if rf.mission == "" {
 		return NewBadUsageError("--mission is required")
+	}
+	if _, err := computeWaitDeadline(rf.waitTimeout, rf.timeout, time.Now()); err != nil {
+		return err
 	}
 	hosts := splitHosts(rf.host)
 	if len(hosts) <= 1 {
@@ -212,19 +215,21 @@ func runOne(cmd *cobra.Command, ac *appCtx, rf *runFlags, hostOverride string, i
 	// Output-tail goroutines: stream /v1/missions/{id}/output?stream=stdout|
 	// stderr&follow=true and emit each line on stderr with [stdout]/[stderr]
 	// prefixes.
-	//   - text mode (default)  → prefixedStderr to console, no capture
-	//   - json with --logs     → prefixedStderr to console and capture
-	//   - json (default)       → capture only (surfaced via logs: {} field)
-	//   - ndjson               → no tail (every event already on stdout)
-	//   - --quiet              → no tail at all
+	//   - text mode (default)    → prefixedStderr to console, no capture
+	//   - json/yaml with --logs  → prefixedStderr to console and capture
+	//   - json/yaml (default)    → capture only (surfaced via logs: {} field)
+	//   - ndjson                 → no tail (every event already on stdout)
+	//   - --quiet                → no console tail; json/yaml still capture
 	var tailWG sync.WaitGroup
 	var pw *prefixedStderr
 	var captureOut, captureErr *prefixedStderr
 	var captureOutBuf, captureErrBuf *captureBuf
 	var cancelTail context.CancelFunc = func() {} // no-op when tail not active
-	wantConsole := f == FormatText || (f == FormatJSON && rf.logs)
-	wantCapture := f == FormatJSON
-	if !rf.quiet && (wantConsole || wantCapture) && f != FormatNDJSON {
+	structured := f == FormatJSON || f == FormatYAML
+	wantConsole := !rf.quiet && (f == FormatText || (structured && rf.logs))
+	wantCapture := structured
+	tailing := wantConsole || wantCapture
+	if tailing {
 		if wantConsole {
 			pw = &prefixedStderr{w: stderr}
 		}
@@ -236,7 +241,10 @@ func runOne(cmd *cobra.Command, ac *appCtx, rf *runFlags, hostOverride string, i
 		}
 		var tailCtx context.Context
 		tailCtx, cancelTail = context.WithCancel(ctx)
-		defer cancelTail()
+		defer func() {
+			cancelTail()
+			tailWG.Wait()
+		}()
 		tailWG.Add(2)
 		go func() {
 			defer tailWG.Done()
@@ -253,17 +261,16 @@ func runOne(cmd *cobra.Command, ac *appCtx, rf *runFlags, hostOverride string, i
 		lettsclient.StreamOpts{Follow: true},
 		func(ev lettsclient.Event) error {
 			if f == FormatNDJSON {
+				if ev.Event == "progress" && rf.noProgress {
+					return nil
+				}
 				// Emit every event verbatim to stdout (preserves omitempty
 				// fields like progress value=0.0).
 				if err := writeRawEventLine(stdout, ev); err != nil {
 					return err
 				}
-			} else if !rf.quiet {
-				if pw != nil {
-					logEventToStderrPrefixed(pw, ev, f, rf.noProgress)
-				} else {
-					logEventToStderr(stderr, ev, f, rf.noProgress)
-				}
+			} else if pw != nil {
+				logEventToStderrPrefixed(pw, ev, f, rf.noProgress)
 			}
 			if ev.Event == "done" {
 				doneEv = ev
@@ -281,12 +288,9 @@ func runOne(cmd *cobra.Command, ac *appCtx, rf *runFlags, hostOverride string, i
 		return streamErr
 	}
 
-	// Drain-on-done: give the output-tail goroutines up to 1s to flush their
-	// in-flight bytes. This ensures any final [stdout]/[stderr] line lands
-	// in stderr BEFORE the result JSON appears on stdout (clean visual). On
-	// a slow stream we cap rather than block forever — the mission is done,
-	// nobody is waiting for further output.
-	if pw != nil {
+	// Wait at most 1s for the output tails to finish, so their last lines
+	// reach the console and the capture buffers before the result is printed.
+	if tailing {
 		drained := make(chan struct{})
 		go func() { tailWG.Wait(); close(drained) }()
 		select {
@@ -344,7 +348,7 @@ func runOne(cmd *cobra.Command, ac *appCtx, rf *runFlags, hostOverride string, i
 type fanOutResult struct {
 	Host   string
 	Out    []byte // captured stdout (text/json); empty in ndjson
-	Errb   []byte // captured stderr (text only)
+	Errb   []byte // captured stderr (text, or json/yaml with --logs)
 	Err    error
 	HasErr bool
 }
@@ -357,7 +361,7 @@ type fanOutResult struct {
 //   - text:   per-host blocks separated by "== <host> ==" headers; the existing
 //     text body (return JSON on stdout, [event] lines on stderr) goes
 //     under the block header on the same channel.
-//   - json:   one `{results: [{host, ok, outcome, return, exit_code, ...}, ...]}`
+//   - json/yaml: one `{results: [{host, ok, outcome, return, exit_code, logs, ...}, ...]}`
 //     object on stdout.
 //   - ndjson: each per-host event is rewritten with a top-level "host" key and
 //     written to stdout as it arrives. Per-host ordering is preserved;
@@ -376,6 +380,10 @@ func runFanOut(cmd *cobra.Command, ac *appCtx, rf *runFlags, hosts []string, f F
 	}
 
 	results := make([]fanOutResult, len(hosts))
+	perHost := f
+	if f == FormatYAML {
+		perHost = FormatJSON
+	}
 
 	// For ndjson we share stdout with mutex-protected per-event writes so that
 	// per-host event order is preserved while goroutines interleave naturally.
@@ -404,7 +412,7 @@ func runFanOut(cmd *cobra.Command, ac *appCtx, rf *runFlags, hosts []string, f F
 				}()
 			}
 
-			err := runOne(cmd, ac, rf, h, preLoadedInput, f, stdout, stderr)
+			err := runOne(cmd, ac, rf, h, preLoadedInput, perHost, stdout, stderr)
 			if err != nil {
 				results[i].Err = err
 				results[i].HasErr = true
@@ -415,12 +423,23 @@ func runFanOut(cmd *cobra.Command, ac *appCtx, rf *runFlags, hosts []string, f F
 
 	// Aggregate output per format.
 	switch f {
-	case FormatJSON:
-		if err := writeFanOutJSON(cmd.OutOrStdout(), results); err != nil {
+	case FormatJSON, FormatYAML:
+		if err := writeFanOutJSON(cmd.OutOrStdout(), results, f); err != nil {
 			return err
 		}
+		if rf.logs && !rf.quiet {
+			writeFanOutLogs(cmd.ErrOrStderr(), results)
+		}
 	case FormatNDJSON:
-		// Events already streamed; nothing more to emit on stdout.
+		// Events already streamed; report hosts that failed before their
+		// mission reached a done event.
+		for _, r := range results {
+			if r.HasErr && !isMissionOutcomeError(r.Err) {
+				if err := PrintNDJSON(cmd.OutOrStdout(), map[string]string{"host": r.Host, "event": "error", "error": r.Err.Error()}); err != nil {
+					return err
+				}
+			}
+		}
 	default:
 		writeFanOutText(cmd.OutOrStdout(), cmd.ErrOrStderr(), results)
 	}
@@ -450,8 +469,7 @@ func fanOutAggregateError(results []fanOutResult) error {
 			abnormal = append(abnormal, r)
 			continue
 		}
-		// "mission failed" is a plain fmt.Errorf in runOne — detect by string.
-		if strings.HasPrefix(r.Err.Error(), "mission failed") {
+		if isMissionOutcomeError(r.Err) {
 			failed = append(failed, r)
 			continue
 		}
@@ -479,6 +497,24 @@ func fanOutAggregateError(results []fanOutResult) error {
 	return nil
 }
 
+// isMissionOutcomeError reports whether err is runOne's report of a mission
+// that finished failed or abnormally.
+func isMissionOutcomeError(err error) bool {
+	var ma *MissionAbnormalError
+	return errors.As(err, &ma) || strings.HasPrefix(err.Error(), "mission failed")
+}
+
+// writeFanOutLogs writes each host's console tail captured under --logs to
+// stderr in "== <host> ==" blocks.
+func writeFanOutLogs(stderr io.Writer, results []fanOutResult) {
+	for _, r := range results {
+		if len(r.Errb) > 0 {
+			_, _ = fmt.Fprintf(stderr, "== %s ==\n", r.Host)
+			_, _ = stderr.Write(r.Errb)
+		}
+	}
+}
+
 // writeFanOutText writes per-host blocks. Each block is prefixed with
 // "== <host> ==" on stdout; the captured per-host stdout/stderr buffers are
 // written immediately after on their respective channels. A trailing
@@ -499,21 +535,23 @@ func writeFanOutText(stdout, stderr io.Writer, results []fanOutResult) {
 	}
 }
 
-// writeFanOutJSON emits {"results":[{host,ok,error?,...done fields...},...]}.
-// The per-host done payload (outcome, return, exit_code, ...) is recovered by
-// re-parsing the captured stdout buffer that runOne produced in json mode.
-func writeFanOutJSON(w io.Writer, results []fanOutResult) error {
+// writeFanOutJSON emits {"results":[{host,ok,error?,...done fields...},...]}
+// as JSON or YAML (f). The per-host done payload (outcome, return, exit_code,
+// logs, ...) is recovered by re-parsing the captured stdout buffer that runOne
+// produced in json mode.
+func writeFanOutJSON(w io.Writer, results []fanOutResult, f Format) error {
 	type row struct {
-		Host    string          `json:"host"`
-		OK      bool            `json:"ok"`
-		Error   string          `json:"error,omitempty"`
-		Outcome string          `json:"outcome,omitempty"`
-		Return  json.RawMessage `json:"return,omitempty"`
-		ExitVal *int            `json:"exit_code,omitempty"`
-		Signal  string          `json:"signal,omitempty"`
-		Reason  string          `json:"fail_reason,omitempty"`
-		Message string          `json:"fail_message,omitempty"`
-		Dur     int64           `json:"duration_ms,omitempty"`
+		Host    string            `json:"host"`
+		OK      bool              `json:"ok"`
+		Error   string            `json:"error,omitempty"`
+		Outcome string            `json:"outcome,omitempty"`
+		Return  json.RawMessage   `json:"return,omitempty"`
+		ExitVal *int              `json:"exit_code,omitempty"`
+		Signal  string            `json:"signal,omitempty"`
+		Reason  string            `json:"fail_reason,omitempty"`
+		Message string            `json:"fail_message,omitempty"`
+		Dur     int64             `json:"duration_ms,omitempty"`
+		Logs    map[string]string `json:"logs,omitempty"`
 	}
 	rows := make([]row, 0, len(results))
 	for _, r := range results {
@@ -526,13 +564,14 @@ func writeFanOutJSON(w io.Writer, results []fanOutResult) error {
 		// Parse the captured single-host json body when present.
 		if len(r.Out) > 0 {
 			var parsed struct {
-				Outcome     string          `json:"outcome"`
-				Return      json.RawMessage `json:"return"`
-				ExitCode    *int            `json:"exit_code"`
-				Signal      string          `json:"signal"`
-				FailReason  string          `json:"fail_reason"`
-				FailMessage string          `json:"fail_message"`
-				DurationMs  int64           `json:"duration_ms"`
+				Outcome     string            `json:"outcome"`
+				Return      json.RawMessage   `json:"return"`
+				ExitCode    *int              `json:"exit_code"`
+				Signal      string            `json:"signal"`
+				FailReason  string            `json:"fail_reason"`
+				FailMessage string            `json:"fail_message"`
+				DurationMs  int64             `json:"duration_ms"`
+				Logs        map[string]string `json:"logs"`
 			}
 			if err := json.Unmarshal(r.Out, &parsed); err == nil {
 				row.Outcome = parsed.Outcome
@@ -542,9 +581,13 @@ func writeFanOutJSON(w io.Writer, results []fanOutResult) error {
 				row.Reason = parsed.FailReason
 				row.Message = parsed.FailMessage
 				row.Dur = parsed.DurationMs
+				row.Logs = parsed.Logs
 			}
 		}
 		rows = append(rows, row)
+	}
+	if f == FormatYAML {
+		return PrintYAML(w, map[string]any{"results": rows})
 	}
 	return PrintJSON(w, map[string]any{"results": rows})
 }
@@ -620,43 +663,23 @@ func (w *hostPrefixWriter) emitLine(line []byte) error {
 	return err
 }
 
-// logEventToStderr renders a streamed event as a human-readable line
-// (text mode). For JSON/NDJSON modes stderr is suppressed by default,
-// so this is a no-op; the --logs flag (which would surface stderr in JSON
-// mode) is honored at the caller level (printRunResultWithLogs routes
-// return to stdout regardless).
-//
-// Kept for the fan-out / non-text path that bypasses prefixedStderr (text
-// mode with output-tail goroutines uses logEventToStderrPrefixed instead).
-func logEventToStderr(w io.Writer, ev lettsclient.Event, f Format, noProgress bool) {
-	if f == FormatJSON || f == FormatNDJSON {
-		// json/ndjson modes suppress stderr by default; --logs handled in printRunResultWithLogs.
-		return
-	}
-	switch ev.Event {
-	case "progress":
-		if !noProgress {
-			_, _ = fmt.Fprintf(w, "[progress] %.2f %s\n", ev.Value, ev.Message)
-		}
-	case "running":
-		_, _ = fmt.Fprintf(w, "[event] running pid=%d\n", ev.Pid)
-	case "queued":
-		_, _ = fmt.Fprintf(w, "[event] queued\n")
-	case "done":
-		_, _ = fmt.Fprintf(w, "[event] done outcome=%s\n", ev.Outcome)
-	}
-}
-
 // prefixedStderr is a thread-safe stderr writer that emits "[prefix] line\n"
-// per call. The mutex guarantees lines from different sources (events,
-// stdout tail, stderr tail) never interleave mid-line — without it a
-// [stdout] write could land in the middle of a [progress] write.
+// per call. All writes to w go through mu, so lines from different sources
+// (events, stdout tail, stderr tail) never interleave mid-line. A sink built
+// by multiPrefixed has no w and forwards each line to its fans instead.
 type prefixedStderr struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu   sync.Mutex
+	w    io.Writer
+	fans []*prefixedStderr
 }
 
 func (p *prefixedStderr) line(prefix, msg string) {
+	if p.fans != nil {
+		for _, f := range p.fans {
+			f.line(prefix, msg)
+		}
+		return
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	_, _ = fmt.Fprintf(p.w, "[%s] %s\n", prefix, msg)
@@ -678,19 +701,7 @@ func multiPrefixed(a, b *prefixedStderr) *prefixedStderr {
 	if b == nil {
 		return a
 	}
-	return &prefixedStderr{w: &teeWriter{a: a.w, b: b.w}}
-}
-
-// teeWriter writes every byte to both underlying writers. Errors from the
-// secondary write are swallowed — the capture buffer should never fail
-// (in-memory), and propagating a console-stderr failure into the JSON
-// pipeline would mask the mission outcome.
-type teeWriter struct{ a, b io.Writer }
-
-func (t *teeWriter) Write(p []byte) (int, error) {
-	n, err := t.a.Write(p)
-	_, _ = t.b.Write(p)
-	return n, err
+	return &prefixedStderr{fans: []*prefixedStderr{a, b}}
 }
 
 // captureBuf is an in-memory, mutex-protected, byte-capped buffer used to
@@ -761,10 +772,10 @@ func tailMissionStream(ctx context.Context, c *lettsclient.Client, missionID, wh
 	}
 }
 
-// logEventToStderrPrefixed mirrors logEventToStderr but writes through a
-// prefixedStderr so it serializes with output-tail goroutines.
+// logEventToStderrPrefixed renders a streamed event as a human-readable
+// "[event]"/"[progress]" line through p (text mode only).
 func logEventToStderrPrefixed(p *prefixedStderr, ev lettsclient.Event, f Format, noProgress bool) {
-	if f == FormatJSON || f == FormatNDJSON {
+	if f != FormatText {
 		return
 	}
 	switch ev.Event {
@@ -786,15 +797,14 @@ func logEventToStderrPrefixed(p *prefixedStderr, ev lettsclient.Event, f Format,
 // Layout depends on Format:
 //
 //   - text: pretty-printed `return` JSON only;
-//   - json: single object {outcome, return, exit_code, signal, fail_*, duration_ms, logs:{stdout, stderr}};
+//   - json/yaml: single object {outcome, return, exit_code, signal, fail_*, duration_ms, logs:{stdout, stderr}};
 //   - ndjson: no-op (events were emitted to stdout during the stream loop).
 //
-// JSON mode always emits the logs field, with empty strings when capture
-// wasn't enabled (--quiet or --output=json without --logs in earlier
-// builds — keeping the field-presence contract stable for consumers).
+// JSON and YAML always emit the logs field, with empty strings when nothing
+// was captured, keeping the field-presence contract stable for consumers.
 func printRunResultWithLogs(w io.Writer, doneEv lettsclient.Event, f Format, stdoutBytes, stderrBytes []byte) error {
 	switch f {
-	case FormatJSON:
+	case FormatJSON, FormatYAML:
 		obj := map[string]any{
 			"outcome":      doneEv.Outcome,
 			"return":       doneEv.Return,
@@ -807,6 +817,9 @@ func printRunResultWithLogs(w io.Writer, doneEv lettsclient.Event, f Format, std
 				"stdout": string(stdoutBytes),
 				"stderr": string(stderrBytes),
 			},
+		}
+		if f == FormatYAML {
+			return PrintYAML(w, obj)
 		}
 		return PrintJSON(w, obj)
 	case FormatNDJSON:

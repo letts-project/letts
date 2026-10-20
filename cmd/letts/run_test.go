@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"letts/pkg/lettsconfig"
 )
 
@@ -430,5 +432,131 @@ func TestRunMissingMissionIsBadUsage(t *testing.T) {
 	var bue *BadUsageError
 	if !errors.As(err, &bue) {
 		t.Errorf("got %T %v", err, err)
+	}
+}
+
+// lateOutputRunAppCtx serves a mission whose done event arrives before its
+// stdout/stderr tails finish. Returns the appCtx and a dispatch counter.
+func lateOutputRunAppCtx(t *testing.T) (*appCtx, *int) {
+	t.Helper()
+	mid := "01900000-0000-7000-8000-000000000001"
+	dispatches := new(int)
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/dispatch", func(w http.ResponseWriter, r *http.Request) {
+		*dispatches++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = io.WriteString(w, `{"mission_id":"`+mid+`","status":"queued"}`)
+	})
+	mux.HandleFunc("GET /v1/missions/{id}/events", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"seq":1,"event":"progress","value":0.5,"message":"half"}`+"\n"+
+			`{"seq":2,"event":"done","outcome":"success","exit_code":0,"return":{"ok":true}}`+"\n")
+	})
+	mux.HandleFunc("GET /v1/missions/{id}/output", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		time.Sleep(200 * time.Millisecond)
+		_, _ = io.WriteString(w, "late "+r.URL.Query().Get("stream")+"\n")
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &appCtx{
+		Config: &lettsconfig.Config{
+			Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: "tok",
+				Lanes: map[string]lettsconfig.LaneCfg{"normal": {Concurrency: 1}}}},
+			Routes: map[string]lettsconfig.Route{"normal": {Host: "s1", Lane: "normal"}},
+		},
+		Getenv:       func(k string) (string, bool) { return "", false },
+		BaseURLForID: map[string]string{"s1": srv.URL},
+		clients:      map[clientKey]*hostClient{},
+	}, dispatches
+}
+
+func runCoreForTest(t *testing.T, ac *appCtx, rf *runFlags, f Format) (string, string, error) {
+	t.Helper()
+	cmd := newRunCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetContext(context.Background())
+	err := runCore(cmd, ac, rf, f)
+	return stdout.String(), stderr.String(), err
+}
+
+func TestRunStructuredCapturesLateLogs(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		f     Format
+		quiet bool
+	}{
+		{"json", FormatJSON, false},
+		{"json quiet", FormatJSON, true},
+		{"yaml", FormatYAML, false},
+	} {
+		ac, _ := lateOutputRunAppCtx(t)
+		stdout, stderr, err := runCoreForTest(t, ac, &runFlags{route: "normal", mission: "M", quiet: tc.quiet}, tc.f)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		var res struct {
+			Outcome string            `json:"outcome" yaml:"outcome"`
+			Return  map[string]any    `json:"return" yaml:"return"`
+			Logs    map[string]string `json:"logs" yaml:"logs"`
+		}
+		if tc.f == FormatYAML {
+			err = yaml.Unmarshal([]byte(stdout), &res)
+		} else {
+			err = json.Unmarshal([]byte(stdout), &res)
+		}
+		if err != nil {
+			t.Fatalf("%s: decode %q: %v", tc.name, stdout, err)
+		}
+		if res.Outcome != "success" || res.Return["ok"] != true {
+			t.Errorf("%s: result = %+v", tc.name, res)
+		}
+		if !strings.Contains(res.Logs["stdout"], "late stdout") || !strings.Contains(res.Logs["stderr"], "late stderr") {
+			t.Errorf("%s: logs = %q", tc.name, res.Logs)
+		}
+		if stderr != "" {
+			t.Errorf("%s: stderr = %q, want empty without --logs", tc.name, stderr)
+		}
+	}
+}
+
+func TestRunNDJSONHonoursNoProgress(t *testing.T) {
+	ac, _ := lateOutputRunAppCtx(t)
+	stdout, _, err := runCoreForTest(t, ac, &runFlags{route: "normal", mission: "M", noProgress: true}, FormatNDJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stdout, `"progress"`) || !strings.Contains(stdout, `"done"`) {
+		t.Errorf("stdout = %q", stdout)
+	}
+}
+
+func TestRunRejectsBadWaitTimeoutBeforeDispatch(t *testing.T) {
+	ac, dispatches := lateOutputRunAppCtx(t)
+	_, _, err := runCoreForTest(t, ac, &runFlags{route: "normal", mission: "M", waitTimeout: "ten"}, FormatText)
+	if got := mapErrorToExit(err); got != 2 || *dispatches != 0 {
+		t.Errorf("exit=%d dispatches=%d, want 2 and 0", got, *dispatches)
+	}
+}
+
+func TestRunJSONLogsTeesBothTailsSafely(t *testing.T) {
+	ac, _ := lateOutputRunAppCtx(t)
+	stdout, stderr, err := runCoreForTest(t, ac, &runFlags{route: "normal", mission: "M", logs: true}, FormatJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[stdout] late stdout\n", "[stderr] late stderr\n"} {
+		if strings.Count(stderr, want) != 1 {
+			t.Errorf("stderr %q: want exactly one %q", stderr, want)
+		}
+	}
+	if !strings.Contains(stdout, "late stdout") {
+		t.Errorf("stdout logs missing: %q", stdout)
 	}
 }

@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"letts/pkg/lettsconfig"
 )
 
@@ -392,5 +394,73 @@ func TestRunMultiHostBlockedMissionID(t *testing.T) {
 	var bue *BadUsageError
 	if !errors.As(err, &bue) {
 		t.Errorf("got %T %v, want BadUsageError", err, err)
+	}
+}
+
+func TestRunMultiHostYAMLResults(t *testing.T) {
+	s1 := newFanoutHostStub(t, "s1")
+	s2 := newFanoutHostStub(t, "s2")
+	defer s1.close()
+	defer s2.close()
+	for _, s := range []*fanoutHostStub{s1, s2} {
+		s.eventsHandler = func(w http.ResponseWriter, _ *http.Request) {
+			writeNDJSON(w, `{"seq":1,"event":"done","outcome":"success","exit_code":0,"return":{"k":1}}`)
+		}
+	}
+	ac := stubFanoutAppCtx(t, []*fanoutHostStub{s1, s2})
+	cmd := newRunCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetContext(context.Background())
+	if err := runCore(cmd, ac, &runFlags{host: "s1,s2", lane: "normal", mission: "M"}, FormatYAML); err != nil {
+		t.Fatalf("runCore: %v", err)
+	}
+	var top struct {
+		Results []struct {
+			Host    string            `yaml:"host"`
+			Outcome string            `yaml:"outcome"`
+			Return  map[string]int    `yaml:"return"`
+			Logs    map[string]string `yaml:"logs"`
+		} `yaml:"results"`
+	}
+	if err := yaml.Unmarshal(out.Bytes(), &top); err != nil {
+		t.Fatalf("stdout not YAML: %v\n%s", err, out.String())
+	}
+	if len(top.Results) != 2 || top.Results[0].Outcome != "success" || top.Results[0].Return["k"] != 1 {
+		t.Errorf("results = %+v\n%s", top.Results, out.String())
+	}
+	if _, ok := top.Results[0].Logs["stdout"]; !ok {
+		t.Errorf("logs missing from fan-out rows:\n%s", out.String())
+	}
+}
+
+func TestRunMultiHostNDJSONReportsSetupFailures(t *testing.T) {
+	s1 := newFanoutHostStub(t, "s1")
+	defer s1.close()
+	s1.eventsHandler = func(w http.ResponseWriter, _ *http.Request) {
+		writeNDJSON(w, `{"seq":1,"event":"done","outcome":"success","exit_code":0}`)
+	}
+	ac := stubFanoutAppCtx(t, []*fanoutHostStub{s1})
+	cmd := newRunCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetIn(bytes.NewReader(nil))
+	cmd.SetContext(context.Background())
+	err := runCore(cmd, ac, &runFlags{host: "s1,ghost", lane: "normal", mission: "M"}, FormatNDJSON)
+	if err == nil {
+		t.Fatal("want an error for the unknown host")
+	}
+	var sawError bool
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		var m map[string]string
+		if json.Unmarshal([]byte(line), &m) == nil && m["host"] == "ghost" && m["event"] == "error" && m["error"] != "" {
+			sawError = true
+		}
+	}
+	if !sawError {
+		t.Errorf("no error line for ghost in:\n%s", out.String())
 	}
 }
