@@ -480,6 +480,47 @@ func TestListMissionsFilterByGroupID(t *testing.T) {
 	}
 }
 
+func TestListMissionsFilterByRestartedFrom(t *testing.T) {
+	db := setupDB(t)
+
+	orig := "0192eeee-0000-7000-8000-000000000000"
+	other := "0192eeee-0000-7000-8000-000000000001"
+	insert := func(id, from string, createdMs int64) {
+		t.Helper()
+		m := &Mission{
+			ID:            id,
+			Kind:          KindMission,
+			MissionName:   "m",
+			Lane:          "light",
+			Status:        StatusQueued,
+			Input:         []byte(`{}`),
+			TimeCreatedMs: createdMs,
+			RestartedFrom: sql.NullString{String: from, Valid: from != ""},
+		}
+		if err := InsertMission(context.Background(), db, m); err != nil {
+			t.Fatalf("insert %s: %v", id, err)
+		}
+	}
+	insert(orig, "", 1700000000000)
+	insert(other, "", 1700000000001)
+	insert("0192eeee-0000-7000-8000-000000000002", orig, 1700000000002)
+	insert("0192eeee-0000-7000-8000-000000000003", orig, 1700000000003)
+	insert("0192eeee-0000-7000-8000-000000000004", other, 1700000000004)
+
+	rows, err := ListMissions(context.Background(), db, ListFilter{RestartedFrom: orig}, nil, 100)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len=%d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if r.RestartedFrom.String != orig {
+			t.Errorf("got restarted_from %q, want %q", r.RestartedFrom.String, orig)
+		}
+	}
+}
+
 func TestListMissionsOrderFinished(t *testing.T) {
 	db := setupDB(t)
 	mk := func(createdMs, finishedMs int64) string {

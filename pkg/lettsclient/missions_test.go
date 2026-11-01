@@ -192,6 +192,25 @@ func TestListMissionsOptsEncodesGroupID(t *testing.T) {
 	}
 }
 
+func TestListMissionsOptsEncodesRestartedFrom(t *testing.T) {
+	var gotURL string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotURL = r.URL.String()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"missions":[]}`))
+	}))
+	defer srv.Close()
+
+	c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
+	_, err := ListMissions(c, ListMissionsOpts{RestartedFrom: "0192aaaa-0000-7000-8000-000000000000"})
+	if err != nil {
+		t.Fatalf("ListMissions: %v", err)
+	}
+	if !strings.Contains(gotURL, "restarted_from=0192aaaa-0000-7000-8000-000000000000") {
+		t.Errorf("URL %q missing restarted_from", gotURL)
+	}
+}
+
 func TestListMissionsOptsEncodesMissionPrefix(t *testing.T) {
 	var gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

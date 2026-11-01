@@ -1191,7 +1191,7 @@ in `network.trusted_proxies`; otherwise the direct peer address is used.
 | `GET /v1/missions/{id}` | The full mission resource, including joined input/output staging metadata. |
 | `GET /v1/missions/{id}/events` | The NDJSON events stream. `?from=<seq>` resumes from a cursor; `?follow=true` tails until the terminal `done`. |
 | `GET /v1/missions/{id}/output` | The captured output. `?stream=` selects `stdout`, `stderr`, or `combined` (required); `?follow=true` tails. |
-| `GET /v1/missions` | **admin** — list with cursor pagination and filters (`status`, `outcome`, `lane`, `mission`, `kind`, `group_id`, `order`, `since`, `until`, `limit` ≤ 1000, `cursor`). |
+| `GET /v1/missions` | **admin** — list with cursor pagination and filters (`status`, `outcome`, `lane`, `mission`, `kind`, `group_id`, `restarted_from`, `order`, `since`, `until`, `limit` ≤ 1000, `cursor`). |
 
 **Mission lifecycle** (scope: admin):
 

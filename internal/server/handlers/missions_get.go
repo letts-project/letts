@@ -73,6 +73,7 @@ func (h *MissionsHandler) List(w http.ResponseWriter, r *http.Request) {
 		MissionPrefix: q.Get("mission_prefix"),
 		Kind:          q.Get("kind"),
 		GroupID:       q.Get("group_id"), // exec group filter
+		RestartedFrom: q.Get("restarted_from"),
 	}
 	switch order := q.Get("order"); order {
 	case "", "created":

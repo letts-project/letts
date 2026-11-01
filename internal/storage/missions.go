@@ -288,6 +288,7 @@ type ListFilter struct {
 	MissionPrefix string // anchored prefix match on mission name
 	Kind          string
 	GroupID       string // exec group filter
+	RestartedFrom string // missions restarted from this mission id
 	Order         string // "" / "created" (default) | "finished"
 	SinceMs       int64
 	UntilMs       int64
@@ -318,6 +319,10 @@ func ListMissions(ctx context.Context, db DBOrConn, f ListFilter, after *Cursor,
 	if f.GroupID != "" {
 		conds = append(conds, "group_id = ?")
 		args = append(args, f.GroupID)
+	}
+	if f.RestartedFrom != "" {
+		conds = append(conds, "restarted_from = ?")
+		args = append(args, f.RestartedFrom)
 	}
 	if f.Status != "" {
 		conds = append(conds, "status = ?")

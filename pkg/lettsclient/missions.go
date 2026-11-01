@@ -71,6 +71,7 @@ type ListMissionsOpts struct {
 	MissionPrefix string // anchored prefix match on mission name
 	Kind          string
 	GroupID       string // exec group filter
+	RestartedFrom string // missions restarted from this mission id
 	Order         string // "" / "created" (default) | "finished"
 	SinceMs       int64
 	UntilMs       int64
@@ -107,6 +108,9 @@ func (o ListMissionsOpts) toQuery() string {
 	}
 	if o.GroupID != "" {
 		q.Set("group_id", o.GroupID)
+	}
+	if o.RestartedFrom != "" {
+		q.Set("restarted_from", o.RestartedFrom)
 	}
 	if o.SinceMs > 0 {
 		q.Set("since", strconv.FormatInt(o.SinceMs, 10))

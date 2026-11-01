@@ -320,6 +320,49 @@ func TestMissionsListFilterByGroupID(t *testing.T) {
 	}
 }
 
+func TestMissionsListFilterByRestartedFrom(t *testing.T) {
+	h, db := setupMissionsGet(t)
+
+	orig := "0192ffff-0000-7000-8000-000000000000"
+	for i, from := range []string{"", orig, orig, ""} {
+		m := &storage.Mission{
+			ID:            fmt.Sprintf("0192ffff-0000-7000-8000-00000000000%d", i),
+			Kind:          storage.KindMission,
+			MissionName:   "m",
+			Lane:          "light",
+			Status:        storage.StatusQueued,
+			Input:         []byte(`{}`),
+			TimeCreatedMs: int64(1700000000000 + i),
+			RestartedFrom: sql.NullString{String: from, Valid: from != ""},
+		}
+		if err := storage.InsertMission(context.Background(), db, m); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	r := httptest.NewRequest("GET", "/v1/missions?restarted_from="+orig, nil)
+	w := httptest.NewRecorder()
+	h.List(w, r)
+
+	if w.Code != 200 {
+		t.Fatalf("status=%d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Missions []map[string]any `json:"missions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
+	}
+	if len(resp.Missions) != 2 {
+		t.Fatalf("got %d missions, want 2", len(resp.Missions))
+	}
+	for _, m := range resp.Missions {
+		if m["restarted_from"] != orig {
+			t.Errorf("restarted_from=%v, want %s", m["restarted_from"], orig)
+		}
+	}
+}
+
 func TestMissionsListBadCursorReturns400(t *testing.T) {
 	h, _ := setupMissionsGet(t)
 	r := httptest.NewRequest("GET", "/v1/missions?cursor=NOT-BASE64!!!", nil)
