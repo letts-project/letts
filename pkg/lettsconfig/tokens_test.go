@@ -107,62 +107,12 @@ func TestResolveTokenMissingEnvSurfaces(t *testing.T) {
 	}
 }
 
-func TestResolveExecTokenFromDugdale(t *testing.T) {
-	c := &Config{
-		Auth:     Auth{ExecToken: "global-exec"},
-		Dugdales: []Dugdale{{ID: "s1", Host: "h", ExecToken: "own-exec"}},
-	}
-	tok, err := ResolveToken(c, "s1", ScopeExec, envFromMap(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tok != "own-exec" {
-		t.Errorf("got %q want own-exec", tok)
-	}
-}
-
-func TestResolveExecTokenFromGlobal(t *testing.T) {
-	c := &Config{
-		Auth:     Auth{ExecToken: "global-exec"},
-		Dugdales: []Dugdale{{ID: "s1", Host: "h"}},
-	}
-	tok, err := ResolveToken(c, "s1", ScopeExec, envFromMap(nil))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tok != "global-exec" {
-		t.Errorf("got %q want global-exec", tok)
-	}
-}
-
-func TestResolveExecTokenMissingIsErr(t *testing.T) {
-	c := &Config{Dugdales: []Dugdale{{ID: "s1", Host: "h"}}}
-	_, err := ResolveToken(c, "s1", ScopeExec, envFromMap(nil))
-	if err == nil {
-		t.Fatal("expected error for exec scope with no exec token configured")
-	}
-}
-
-func TestResolveExecTokenEnvSubstitution(t *testing.T) {
-	c := &Config{
-		Dugdales: []Dugdale{{ID: "s1", Host: "h", ExecToken: "${X}"}},
-	}
-	tok, err := ResolveToken(c, "s1", ScopeExec, envFromMap(map[string]string{"X": "resolved-exec"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tok != "resolved-exec" {
-		t.Errorf("got %q", tok)
-	}
-}
-
-// TestScopeString ensures every scope (including ScopeExec) has the
+// TestScopeString ensures every scope has the
 // correct human-readable name used in error messages.
 func TestScopeString(t *testing.T) {
 	cases := map[Scope]string{
 		ScopeDispatch: "dispatch",
 		ScopeAdmin:    "admin",
-		ScopeExec:     "exec",
 	}
 	for s, want := range cases {
 		if got := s.String(); got != want {

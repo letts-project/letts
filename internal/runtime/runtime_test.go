@@ -63,7 +63,6 @@ func insertQueuedMission(t *testing.T, db *sql.DB, scriptPath, lane string) stri
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
 		ID:               id,
-		Kind:             storage.KindMission,
 		Lane:             lane,
 		MissionName:      filepath.Base(scriptPath),
 		Status:           storage.StatusQueued,

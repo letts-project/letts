@@ -11,7 +11,6 @@ import (
 	"letts/internal/ids"
 	"letts/internal/mission"
 	"letts/internal/server/handlers"
-	"letts/internal/server/middleware"
 	"letts/internal/storage"
 )
 
@@ -22,7 +21,6 @@ func setupDeleteFixture(t *testing.T, status storage.Status) (*handlers.Lifecycl
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
 		ID:               id,
-		Kind:             storage.KindMission,
 		Lane:             "normal",
 		MissionName:      "DeleteFixture",
 		Status:           status,
@@ -50,11 +48,6 @@ func doDelete(h *handlers.LifecycleHandler, id string, force bool) *httptest.Res
 	}
 	r := httptest.NewRequest("DELETE", url, nil)
 	r.SetPathValue("id", id)
-	// Admin identity for the kind-gate; matches production wiring.
-	ctx := context.WithValue(r.Context(),
-		middleware.IdentityCtxKey(),
-		middleware.Identity{Scope: middleware.ScopeAdmin})
-	r = r.WithContext(ctx)
 	w := httptest.NewRecorder()
 	h.Delete(w, r)
 	return w

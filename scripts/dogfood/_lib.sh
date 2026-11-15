@@ -52,19 +52,6 @@ assert_contains() {
     fi
 }
 
-uuidv7() {
-    # Generates a canonical lowercase UUIDv7 — needed by exec scenarios
-    # 13/14 because --mission-id is validated by the daemon and must be
-    # unique across run-all.sh invocations.
-    python3 -c "
-import os, time
-ts_ms = int(time.time() * 1000)
-rand = os.urandom(10)
-b = ts_ms.to_bytes(6, 'big') + bytes([0x70 | (rand[0] & 0x0f), rand[1], 0x80 | (rand[2] & 0x3f)]) + rand[3:]
-h = b.hex()
-print(f'{h[:8]}-{h[8:12]}-{h[12:16]}-{h[16:20]}-{h[20:]}')"
-}
-
 wait_for_status() {
     local mid="$1" want="$2" timeout="${3:-30}" elapsed=0
     while [ "$elapsed" -lt "$timeout" ]; do

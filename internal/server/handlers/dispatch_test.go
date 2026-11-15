@@ -292,7 +292,6 @@ func TestDispatchIdempotencyReplay200(t *testing.T) {
 	// Pre-insert the mission.
 	m := &storage.Mission{
 		ID:               missionID,
-		Kind:             storage.KindMission,
 		Lane:             "normal",
 		MissionName:      "my_mission",
 		Status:           storage.StatusQueued,
@@ -346,7 +345,6 @@ func TestDispatchIdempotencyConflict409(t *testing.T) {
 
 	if err := storage.InsertMission(context.Background(), h.DB, &storage.Mission{
 		ID:               missionID,
-		Kind:             storage.KindMission,
 		Lane:             "normal",
 		MissionName:      "my_mission",
 		Status:           storage.StatusQueued,
@@ -392,7 +390,6 @@ func TestDispatchDeleting410(t *testing.T) {
 
 	if err := storage.InsertMission(context.Background(), h.DB, &storage.Mission{
 		ID:               missionID,
-		Kind:             storage.KindMission,
 		Lane:             "normal",
 		MissionName:      "my_mission",
 		Status:           storage.StatusDeleting,
@@ -537,7 +534,6 @@ func TestDispatchLaneQueueFull503(t *testing.T) {
 		fp := "fp-lane-" + mid
 		if err := storage.InsertMission(context.Background(), h.DB, &storage.Mission{
 			ID:               mid,
-			Kind:             storage.KindMission,
 			Lane:             "normal",
 			MissionName:      "filler",
 			Status:           storage.StatusQueued,
@@ -584,7 +580,6 @@ func TestDispatchGlobalQueueFull503(t *testing.T) {
 	mid := ids.NewUUIDv7()
 	if err := storage.InsertMission(context.Background(), h.DB, &storage.Mission{
 		ID:               mid,
-		Kind:             storage.KindMission,
 		Lane:             "other",
 		MissionName:      "filler",
 		Status:           storage.StatusQueued,

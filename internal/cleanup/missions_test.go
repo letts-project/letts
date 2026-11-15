@@ -41,18 +41,14 @@ func cleanupCfg(dataDir string) *config.DugdaleConfig {
 			LostCleanupGrace: 10 * time.Minute,
 			SweepInterval:    time.Minute,
 		},
-		Exec: config.ExecConfig{
-			ExecSuccessTTL: 1 * time.Hour,
-			ExecFailedTTL:  24 * time.Hour,
-		},
 	}
 }
 
-func insertCleanupMission(t *testing.T, db *sql.DB, kind storage.Kind, status storage.Status, outcome string, finishedMs int64) string {
+func insertCleanupMission(t *testing.T, db *sql.DB, status storage.Status, outcome string, finishedMs int64) string {
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
-		ID: id, Kind: kind, Lane: "normal",
+		ID: id, Lane: "normal",
 		MissionName: "CleanupFixture", Status: status,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: finishedMs - 1000,
@@ -113,7 +109,7 @@ func TestMissionCleanupRemovesExpiredSuccess(t *testing.T) {
 	cfg := cleanupCfg(dataDir)
 
 	old := time.Now().Add(-2 * time.Hour).UnixMilli() // > SuccessTTL=1h
-	id := insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "success", old)
+	id := insertCleanupMission(t, db, storage.StatusDone, "success", old)
 	writeOutputArtifacts(t, dataDir, id)
 
 	c := newCleaner(db, cfg)
@@ -139,7 +135,7 @@ func TestMissionCleanupKeepsRecentSuccess(t *testing.T) {
 	cfg := cleanupCfg(dataDir)
 
 	recent := time.Now().Add(-30 * time.Minute).UnixMilli() // < SuccessTTL
-	id := insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "success", recent)
+	id := insertCleanupMission(t, db, storage.StatusDone, "success", recent)
 	writeOutputArtifacts(t, dataDir, id)
 
 	c := newCleaner(db, cfg)
@@ -157,7 +153,7 @@ func TestMissionCleanupRemovesExpiredFailed(t *testing.T) {
 	cfg.Cleanup.FailedTTL = 1 * time.Hour
 
 	old := time.Now().Add(-2 * time.Hour).UnixMilli()
-	insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "failed", old)
+	insertCleanupMission(t, db, storage.StatusDone, "failed", old)
 
 	c := newCleaner(db, cfg)
 	c.RunOnce(context.Background())
@@ -173,8 +169,8 @@ func TestMissionCleanupSkipsRunningAndQueued(t *testing.T) {
 	cfg := cleanupCfg(dataDir)
 
 	old := time.Now().Add(-2 * time.Hour).UnixMilli()
-	insertCleanupMission(t, db, storage.KindMission, storage.StatusRunning, "", old)
-	insertCleanupMission(t, db, storage.KindMission, storage.StatusQueued, "", old)
+	insertCleanupMission(t, db, storage.StatusRunning, "", old)
+	insertCleanupMission(t, db, storage.StatusQueued, "", old)
 
 	c := newCleaner(db, cfg)
 	c.RunOnce(context.Background())
@@ -190,7 +186,7 @@ func TestMissionCleanupResumeOrphanDeleting(t *testing.T) {
 	cfg := cleanupCfg(dataDir)
 
 	// Simulate prior crash: row in deleting state, files already gone.
-	id := insertCleanupMission(t, db, storage.KindMission, storage.StatusDeleting, "success", time.Now().UnixMilli())
+	id := insertCleanupMission(t, db, storage.StatusDeleting, "success", time.Now().UnixMilli())
 
 	c := newCleaner(db, cfg)
 	c.RunOnce(context.Background())
@@ -212,7 +208,7 @@ func TestMissionCleanupDeletingWithIntentIsDeferred(t *testing.T) {
 	dataDir := t.TempDir()
 	cfg := cleanupCfg(dataDir)
 
-	id := insertCleanupMission(t, db, storage.KindMission, storage.StatusDeleting, "", 0)
+	id := insertCleanupMission(t, db, storage.StatusDeleting, "", 0)
 	if err := storage.InsertFinalizeIntent(context.Background(), db, &storage.FinalizeIntent{
 		MissionID: id, Phase: storage.PhasePrepared, Outcome: "success",
 		Outputs: []byte("[]"), DoneSeq: 1, DoneEvent: `{"event":"done"}`,
@@ -248,7 +244,7 @@ func TestMissionCleanupLostRespectsGrace(t *testing.T) {
 
 	// finished 10m ago — within grace; should be kept.
 	recent := time.Now().Add(-10 * time.Minute).UnixMilli()
-	insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "lost", recent)
+	insertCleanupMission(t, db, storage.StatusDone, "lost", recent)
 
 	c := newCleaner(db, cfg)
 	c.RunOnce(context.Background())
@@ -259,74 +255,11 @@ func TestMissionCleanupLostRespectsGrace(t *testing.T) {
 
 	// finished 1h ago — past grace; should go.
 	old := time.Now().Add(-1 * time.Hour).UnixMilli()
-	insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "lost", old)
+	insertCleanupMission(t, db, storage.StatusDone, "lost", old)
 	c.RunOnce(context.Background())
 
 	if countMissions(t, db) != 1 { // recent one kept, old one gone
 		t.Errorf("count=%d; expected only the recent lost mission", countMissions(t, db))
-	}
-}
-
-// An exec mission marked outcome='lost' must use exec_failed_ttl
-// + lost_cleanup_grace, not the mission-side failed_ttl + grace. The
-// previous implementation shared one cutoffLost for both kinds, so an
-// exec that crashed and was reclassified `lost` would linger for
-// mission-side failed_ttl (default 7d) instead of exec_failed_ttl
-// (default 24h). Test: short ExecFailedTTL, long FailedTTL — the exec
-// lost row goes, the mission lost row stays.
-func TestMissionCleanupLostRespectsExecTTL(t *testing.T) {
-	db := setupCleanupDB(t)
-	dataDir := t.TempDir()
-	cfg := cleanupCfg(dataDir)
-	cfg.Cleanup.FailedTTL = 24 * time.Hour
-	cfg.Exec.ExecFailedTTL = 5 * time.Minute
-	cfg.Cleanup.LostCleanupGrace = 1 * time.Minute
-
-	// Finished 15m ago — past exec ExecFailedTTL + grace (=6m) but well
-	// within mission FailedTTL + grace (=24h1m).
-	old := time.Now().Add(-15 * time.Minute).UnixMilli()
-	insertCleanupMission(t, db, storage.KindExec, storage.StatusDone, "lost", old)
-	insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "lost", old)
-
-	c := newCleaner(db, cfg)
-	c.RunOnce(context.Background())
-
-	if countMissions(t, db) != 1 {
-		t.Errorf("count=%d, want 1 (mission lost kept, exec lost removed)", countMissions(t, db))
-	}
-	var kind string
-	if err := db.QueryRow(`SELECT kind FROM missions LIMIT 1`).Scan(&kind); err != nil {
-		t.Fatal(err)
-	}
-	if kind != "mission" {
-		t.Errorf("surviving kind=%q, want mission (exec should have been purged)", kind)
-	}
-}
-
-func TestMissionCleanupExecHasOwnTTL(t *testing.T) {
-	db := setupCleanupDB(t)
-	dataDir := t.TempDir()
-	cfg := cleanupCfg(dataDir)
-	cfg.Cleanup.SuccessTTL = 24 * time.Hour
-	cfg.Exec.ExecSuccessTTL = 1 * time.Minute
-
-	old := time.Now().Add(-10 * time.Minute).UnixMilli() // > exec ttl, < mission ttl
-	insertCleanupMission(t, db, storage.KindExec, storage.StatusDone, "success", old)
-	insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "success", old)
-
-	c := newCleaner(db, cfg)
-	c.RunOnce(context.Background())
-
-	if countMissions(t, db) != 1 {
-		t.Errorf("count=%d, want 1 (mission kept, exec removed)", countMissions(t, db))
-	}
-	// Verify the surviving row is the mission.
-	var kind string
-	if err := db.QueryRow(`SELECT kind FROM missions LIMIT 1`).Scan(&kind); err != nil {
-		t.Fatal(err)
-	}
-	if kind != "mission" {
-		t.Errorf("kind=%q, want mission", kind)
 	}
 }
 
@@ -338,7 +271,7 @@ func TestMissionCleanupBatchedHandlesManyVictims(t *testing.T) {
 	old := time.Now().Add(-2 * time.Hour).UnixMilli()
 	const N = 1100 // crosses the 1000-row batch boundary
 	for i := 0; i < N; i++ {
-		insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "success", old+int64(i))
+		insertCleanupMission(t, db, storage.StatusDone, "success", old+int64(i))
 	}
 	if countMissions(t, db) != N {
 		t.Fatalf("setup: %d", countMissions(t, db))
@@ -358,7 +291,7 @@ func TestMissionCleanupRecalcsAffectedStaging(t *testing.T) {
 	cfg := cleanupCfg(dataDir)
 
 	old := time.Now().Add(-2 * time.Hour).UnixMilli()
-	mID := insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "success", old)
+	mID := insertCleanupMission(t, db, storage.StatusDone, "success", old)
 
 	stagingID := ids.NewUUIDv7()
 	now := time.Now().UnixMilli()
@@ -390,58 +323,6 @@ func TestMissionCleanupRecalcsAffectedStaging(t *testing.T) {
 	expected := sf.TimeCreatedMs + cfg.Cleanup.StagingTTL.Milliseconds()
 	if sf.TimeExpiresMs != expected {
 		t.Errorf("staging TimeExpires=%d, want %d", sf.TimeExpiresMs, expected)
-	}
-}
-
-func TestCleanupExecMissionPurgesAndRecalcsStagingTTL(t *testing.T) {
-	db := setupCleanupDB(t)
-	dataDir := t.TempDir()
-	cfg := cleanupCfg(dataDir)
-	cfg.Exec.ExecSuccessTTL = 1 * time.Hour
-	cfg.Cleanup.StagingTTL = 1 * time.Hour
-
-	// Seed an exec mission that finished 2h ago (> ExecSuccessTTL=1h).
-	old := time.Now().Add(-2 * time.Hour).UnixMilli()
-	mID := insertCleanupMission(t, db, storage.KindExec, storage.StatusDone, "success", old)
-	writeOutputArtifacts(t, dataDir, mID)
-
-	// Seed a staging file referenced by the exec mission.
-	stagingID := ids.NewUUIDv7()
-	now := time.Now().UnixMilli()
-	if err := storage.InsertStaging(context.Background(), db, &storage.StagingFile{
-		StagingID: stagingID, State: storage.StagingComplete,
-		Sha256: "sha-x", Size: 100, BytesReceived: 100,
-		Path:          "p",
-		TimeCreatedMs: now, TimeUpdatedMs: now,
-		// Pin TimeExpires far in the future — recalc should pull it back to orphan window.
-		TimeExpiresMs: now + 7*24*60*60*1000,
-	}); err != nil {
-		t.Fatalf("insert staging: %v", err)
-	}
-	if err := storage.InsertRef(context.Background(), db, storage.StagingRef{
-		MissionID: mID, StagingID: stagingID, RefKind: storage.RefInput, Role: "data",
-	}); err != nil {
-		t.Fatalf("insert ref: %v", err)
-	}
-
-	c := newCleaner(db, cfg)
-	c.RunOnce(context.Background())
-
-	// Exec mission row is gone (purged on exec_success_ttl).
-	if _, err := storage.GetMission(context.Background(), db, mID); !errors.Is(err, storage.ErrNotFound) {
-		t.Errorf("exec mission still present after cleanup: err=%v", err)
-	}
-
-	// Staging row remains, but TTL was recalc'd to orphan window
-	// (TimeCreated + StagingTTL), no longer pinned by the deleted mission.
-	sf, err := storage.GetStaging(context.Background(), db, stagingID)
-	if err != nil {
-		t.Fatalf("staging gone too early: %v", err)
-	}
-	expected := sf.TimeCreatedMs + cfg.Cleanup.StagingTTL.Milliseconds()
-	if sf.TimeExpiresMs != expected {
-		t.Errorf("staging TimeExpires=%d, want %d (orphan TimeCreated+StagingTTL)",
-			sf.TimeExpiresMs, expected)
 	}
 }
 

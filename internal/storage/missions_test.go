@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +30,6 @@ func TestInsertGetMission(t *testing.T) {
 	id := ids.NewUUIDv7()
 	m := Mission{
 		ID:               id,
-		Kind:             KindMission,
 		Lane:             "normal",
 		MissionName:      "BookCalc",
 		Status:           StatusQueued,
@@ -67,7 +65,6 @@ func TestListMissionsMissionSubstringFilter(t *testing.T) {
 	for _, name := range []string{"ArbyDeploy", "deploy-worker", "BookCalc"} {
 		if err := InsertMission(ctx, db, &Mission{
 			ID:               ids.NewUUIDv7(),
-			Kind:             KindMission,
 			Lane:             "normal",
 			MissionName:      name,
 			Status:           StatusQueued,
@@ -106,7 +103,6 @@ func TestListMissionsMissionPrefixFilter(t *testing.T) {
 	for _, name := range []string{"deploy-web", "deploy-db", "rollback-web"} {
 		if err := InsertMission(ctx, db, &Mission{
 			ID:               ids.NewUUIDv7(),
-			Kind:             KindMission,
 			Lane:             "normal",
 			MissionName:      name,
 			Status:           StatusQueued,
@@ -152,7 +148,6 @@ func TestMarkRunning(t *testing.T) {
 	id := ids.NewUUIDv7()
 	err := InsertMission(context.Background(), db, &Mission{
 		ID:               id,
-		Kind:             KindMission,
 		Lane:             "normal",
 		MissionName:      "test",
 		Status:           StatusQueued,
@@ -192,7 +187,7 @@ func TestUpdateRunningPid(t *testing.T) {
 	db := setupDB(t)
 	id := ids.NewUUIDv7()
 	if err := InsertMission(context.Background(), db, &Mission{
-		ID: id, Kind: KindMission, Lane: "normal", MissionName: "test",
+		ID: id, Lane: "normal", MissionName: "test",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "fp",
 		TimeCreatedMs: 1000,
 	}); err != nil {
@@ -246,7 +241,7 @@ func TestUpdateRunningPidNotRunning(t *testing.T) {
 	db := setupDB(t)
 	id := ids.NewUUIDv7()
 	if err := InsertMission(context.Background(), db, &Mission{
-		ID: id, Kind: KindMission, Lane: "normal", MissionName: "test",
+		ID: id, Lane: "normal", MissionName: "test",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "fp",
 		TimeCreatedMs: 1000,
 	}); err != nil {
@@ -268,7 +263,7 @@ func TestUpdateRunningPidAndTimeStarted(t *testing.T) {
 	db := setupDB(t)
 	id := ids.NewUUIDv7()
 	if err := InsertMission(context.Background(), db, &Mission{
-		ID: id, Kind: KindMission, Lane: "normal", MissionName: "test",
+		ID: id, Lane: "normal", MissionName: "test",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "fp",
 		TimeCreatedMs: 1000,
 	}); err != nil {
@@ -302,14 +297,14 @@ func TestListMissions(t *testing.T) {
 	// Insert 3 queued, 2 running
 	for i := 0; i < 3; i++ {
 		_ = InsertMission(context.Background(), db, &Mission{
-			ID: ids.NewUUIDv7(), Kind: KindMission, Lane: "x", MissionName: "test",
+			ID: ids.NewUUIDv7(), Lane: "x", MissionName: "test",
 			Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 			TimeCreatedMs: int64(1000 + i),
 		})
 	}
 	for i := 0; i < 2; i++ {
 		_ = InsertMission(context.Background(), db, &Mission{
-			ID: ids.NewUUIDv7(), Kind: KindMission, Lane: "x", MissionName: "test",
+			ID: ids.NewUUIDv7(), Lane: "x", MissionName: "test",
 			Status: StatusRunning, Input: []byte("{}"), InputFingerprint: "f",
 			TimeCreatedMs: int64(2000 + i),
 		})
@@ -335,7 +330,7 @@ func TestListMissionsCursorPagination(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		id := ids.NewUUIDv7()
 		_ = InsertMission(context.Background(), db, &Mission{
-			ID: id, Kind: KindMission, Lane: "x", MissionName: "test",
+			ID: id, Lane: "x", MissionName: "test",
 			Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 			TimeCreatedMs: int64(1000 + i),
 		})
@@ -378,12 +373,12 @@ func TestPickQueuedForLane(t *testing.T) {
 	id1 := ids.NewUUIDv7()
 	id2 := ids.NewUUIDv7()
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: id1, Kind: KindMission, Lane: "fast", MissionName: "first",
+		ID: id1, Lane: "fast", MissionName: "first",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 1000,
 	})
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: id2, Kind: KindMission, Lane: "fast", MissionName: "second",
+		ID: id2, Lane: "fast", MissionName: "second",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 2000,
 	})
@@ -410,7 +405,7 @@ func TestPickQueuedSkipsMissionWithFinalizeIntent(t *testing.T) {
 	db := setupDB(t)
 	id := ids.NewUUIDv7()
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: id, Kind: KindMission, Lane: "fast", MissionName: "kill-me",
+		ID: id, Lane: "fast", MissionName: "kill-me",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 1000,
 	})
@@ -436,50 +431,6 @@ func TestPickQueuedSkipsMissionWithFinalizeIntent(t *testing.T) {
 	}
 }
 
-func TestListMissionsFilterByGroupID(t *testing.T) {
-	db := setupDB(t)
-
-	groupA := "0192aaaa-0000-7000-8000-000000000000"
-	groupB := "0192bbbb-0000-7000-8000-000000000000"
-
-	for i, gid := range []string{groupA, groupA, groupA, groupB, ""} {
-		m := &Mission{
-			ID:            fmt.Sprintf("0192cccc-0000-7000-8000-00000000000%d", i),
-			Kind:          KindExec,
-			MissionName:   "exec",
-			Lane:          "light",
-			Status:        StatusQueued,
-			Input:         []byte(`{}`),
-			TimeCreatedMs: int64(1700000000000 + i),
-			GroupID:       sql.NullString{String: gid, Valid: gid != ""},
-		}
-		if err := InsertMission(context.Background(), db, m); err != nil {
-			t.Fatalf("insert: %v", err)
-		}
-	}
-
-	rows, err := ListMissions(context.Background(), db, ListFilter{GroupID: groupA}, nil, 100)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(rows) != 3 {
-		t.Fatalf("groupA len=%d, want 3", len(rows))
-	}
-	for _, r := range rows {
-		if r.GroupID.String != groupA {
-			t.Errorf("got group_id %q, want %q", r.GroupID.String, groupA)
-		}
-	}
-
-	rowsAll, err := ListMissions(context.Background(), db, ListFilter{}, nil, 100)
-	if err != nil {
-		t.Fatalf("list all: %v", err)
-	}
-	if len(rowsAll) != 5 {
-		t.Fatalf("all len=%d, want 5", len(rowsAll))
-	}
-}
-
 func TestListMissionsFilterByRestartedFrom(t *testing.T) {
 	db := setupDB(t)
 
@@ -489,7 +440,6 @@ func TestListMissionsFilterByRestartedFrom(t *testing.T) {
 		t.Helper()
 		m := &Mission{
 			ID:            id,
-			Kind:          KindMission,
 			MissionName:   "m",
 			Lane:          "light",
 			Status:        StatusQueued,
@@ -526,7 +476,7 @@ func TestListMissionsOrderFinished(t *testing.T) {
 	mk := func(createdMs, finishedMs int64) string {
 		id := ids.NewUUIDv7()
 		if err := InsertMission(context.Background(), db, &Mission{
-			ID: id, Kind: KindMission, Lane: "x", MissionName: "m",
+			ID: id, Lane: "x", MissionName: "m",
 			Status: StatusDone, Outcome: sql.NullString{String: "success", Valid: true},
 			Input: []byte("{}"), InputFingerprint: "f",
 			TimeCreatedMs:  createdMs,
@@ -540,7 +490,7 @@ func TestListMissionsOrderFinished(t *testing.T) {
 	idMidFinish := mk(2000, 3000)
 	idEarlyMid := mk(3000, 4000)
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: ids.NewUUIDv7(), Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: ids.NewUUIDv7(), Lane: "x", MissionName: "m",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 9000,
 	})
@@ -574,14 +524,14 @@ func TestListMissionsExcludesDeletingByDefault(t *testing.T) {
 	db := setupDB(t)
 	done := ids.NewUUIDv7()
 	if err := InsertMission(context.Background(), db, &Mission{
-		ID: done, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: done, Lane: "x", MissionName: "m",
 		Status: StatusDone, Input: []byte("{}"), InputFingerprint: "f", TimeCreatedMs: 1000,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	del := ids.NewUUIDv7()
 	if err := InsertMission(context.Background(), db, &Mission{
-		ID: del, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: del, Lane: "x", MissionName: "m",
 		Status: StatusDeleting, Input: []byte("{}"), InputFingerprint: "f", TimeCreatedMs: 2000,
 	}); err != nil {
 		t.Fatal(err)

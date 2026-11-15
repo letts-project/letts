@@ -30,29 +30,14 @@ func newCtlMissionsCmd() *cobra.Command {
 // newCtlMissionsListCmd binds `letts ctl missions list`. --host is required
 // because listing is admin-scoped and the daemon doesn't aggregate across
 // hosts — by-id fan-out is a separate code path.
-//
-// --kind defaults to "mission" so default listings stay clean of exec
-// rows; --kind=all opts back into the unfiltered view. Unknown values are
-// rejected as BadUsage so typos don't silently fall through to a daemon
-// error.
 func newCtlMissionsListCmd() *cobra.Command {
-	var host, status, outcome, lane, mission, missionPrefix, kind, since, until, cursor string
+	var host, status, outcome, lane, mission, missionPrefix, since, until, cursor string
 	var limit int
 	c := &cobra.Command{
 		Use: "list", Short: "List missions",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if host == "" {
 				return NewBadUsageError("--host is required for ctl missions list")
-			}
-			// Validate --kind before setupAppCtx so usage errors don't require
-			// a loaded config (mirrors the --host check above).
-			switch kind {
-			case "mission", "exec":
-				// keep kind as-is; threaded into opts below.
-			case "all":
-				kind = ""
-			default:
-				return NewBadUsageError(`--kind: must be one of "mission", "exec", "all"`)
 			}
 			ac, format, err := setupAppCtx(cmd)
 			if err != nil {
@@ -65,7 +50,6 @@ func newCtlMissionsListCmd() *cobra.Command {
 				Lane:          lane,
 				Mission:       mission,
 				MissionPrefix: missionPrefix,
-				Kind:          kind,
 				Cursor:        cursor,
 				Limit:         limit,
 			}
@@ -92,7 +76,6 @@ func newCtlMissionsListCmd() *cobra.Command {
 	c.Flags().StringVar(&lane, "lane", "", "filter lane")
 	c.Flags().StringVar(&mission, "mission", "", "filter by mission name substring")
 	c.Flags().StringVar(&missionPrefix, "mission-prefix", "", "filter mission name by prefix")
-	c.Flags().StringVar(&kind, "kind", "mission", "kind filter: mission|exec|all")
 	c.Flags().StringVar(&since, "since", "", "absolute ms or relative duration (-1h, -7d)")
 	c.Flags().StringVar(&until, "until", "", "absolute ms or relative duration")
 	c.Flags().IntVar(&limit, "limit", 0, "max rows (default daemon-side)")
@@ -117,51 +100,10 @@ func runCtlMissionsList(ac *appCtx, w, errW io.Writer, host string, opts lettscl
 		}
 		return err
 	}
-	// Conditionally widen the table with DISPLAY_NAME / GROUP_ID columns:
-	// only show them when at least one row has the value populated, so
-	// plain mission listings stay narrow and exec listings surface the
-	// group and display preview automatically.
-	anyGroup, anyDisplay := false, false
+	const row = "%-40s  %-10s  %-10s  %-12s  %-25s  %-13s\n"
+	_, _ = fmt.Fprintf(w, row, "MISSION_ID", "STATUS", "OUTCOME", "LANE", "MISSION", "TIME_CREATED")
 	for _, m := range resp.Missions {
-		if m.GroupID != "" {
-			anyGroup = true
-		}
-		if m.DisplayName != "" {
-			anyDisplay = true
-		}
-	}
-	header := []string{"MISSION_ID", "STATUS", "OUTCOME", "LANE", "MISSION", "TIME_CREATED"}
-	widths := []int{40, 10, 10, 12, 25, 13}
-	if anyDisplay {
-		header = append(header, "DISPLAY_NAME")
-		widths = append(widths, 30)
-	}
-	if anyGroup {
-		header = append(header, "GROUP_ID")
-		widths = append(widths, 40)
-	}
-	for i, h := range header {
-		if i > 0 {
-			_, _ = fmt.Fprintf(w, "  ")
-		}
-		_, _ = fmt.Fprintf(w, "%-*s", widths[i], h)
-	}
-	_, _ = fmt.Fprintln(w)
-	for _, m := range resp.Missions {
-		cols := []string{m.MissionID, m.Status, m.Outcome, m.Lane, m.MissionName, strconv.FormatInt(m.TimeCreatedMs, 10)}
-		if anyDisplay {
-			cols = append(cols, m.DisplayName)
-		}
-		if anyGroup {
-			cols = append(cols, m.GroupID)
-		}
-		for i, c := range cols {
-			if i > 0 {
-				_, _ = fmt.Fprintf(w, "  ")
-			}
-			_, _ = fmt.Fprintf(w, "%-*s", widths[i], c)
-		}
-		_, _ = fmt.Fprintln(w)
+		_, _ = fmt.Fprintf(w, row, m.MissionID, m.Status, m.Outcome, m.Lane, m.MissionName, strconv.FormatInt(m.TimeCreatedMs, 10))
 	}
 	if resp.NextCursor != "" {
 		_, _ = fmt.Fprintf(w, "\ncursor: %s\n", resp.NextCursor)
@@ -197,7 +139,7 @@ func newCtlMissionsShowCmd() *cobra.Command {
 // or via by-id fan-out, then prints the mission record using the active
 // format.
 func runCtlMissionsShow(ac *appCtx, w io.Writer, id, host string, match []string, f Format) error {
-	m, err := getMissionByID(ac, readScopesMission, id, host, match)
+	m, err := getMissionByID(ac, id, host, match)
 	if err != nil {
 		return err
 	}
@@ -205,12 +147,14 @@ func runCtlMissionsShow(ac *appCtx, w io.Writer, id, host string, match []string
 }
 
 // getMissionByID GETs mission id on host, or on the single dugdale that has
-// it, trying tokens in scopes order (see callWithKindScopes).
-func getMissionByID(ac *appCtx, scopes []lettsconfig.Scope, id, host string, match []string) (*lettsclient.Mission, error) {
+// it, with the dispatch token if configured, else the admin token.
+func getMissionByID(ac *appCtx, id, host string, match []string) (*lettsclient.Mission, error) {
 	get := func(hostID string) (*lettsclient.Mission, error) {
-		return callWithKindScopes(ac, hostID, scopes, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
-			return lettsclient.GetMission(c, id)
-		})
+		c, err := clientForFirstAvailableScope(ac, hostID, dispatchOrAdmin)
+		if err != nil {
+			return nil, err
+		}
+		return lettsclient.GetMission(c, id)
 	}
 	if host != "" {
 		return get(host)
@@ -248,7 +192,7 @@ func newCtlMissionsOutputCmd() *cobra.Command {
 				return err
 			}
 			defer ac.Close()
-			return runCtlMissionsOutput(cmd, ac, format, readScopesMission, id, host, stream, follow, match)
+			return runCtlMissionsOutput(cmd, ac, format, id, host, stream, follow, match)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (else by-id fan-out)")
@@ -259,14 +203,15 @@ func newCtlMissionsOutputCmd() *cobra.Command {
 }
 
 // runCtlMissionsOutput opens the /output stream on --host or by by-id fan-out
-// and renders it to stdout in format f (see renderOutput). Tokens are tried in
-// scopes order per host (see callWithKindScopes); conflicts and 404 semantics
-// are identical to show.
-func runCtlMissionsOutput(cmd *cobra.Command, ac *appCtx, f Format, scopes []lettsconfig.Scope, id, host, stream string, follow bool, match []string) error {
+// and renders it to stdout in format f (see renderOutput). Token choice,
+// conflicts and 404 semantics are identical to show.
+func runCtlMissionsOutput(cmd *cobra.Command, ac *appCtx, f Format, id, host, stream string, follow bool, match []string) error {
 	openOn := func(hostID string) (io.ReadCloser, error) {
-		return callWithKindScopes(ac, hostID, scopes, func(c *lettsclient.Client) (io.ReadCloser, error) {
-			return lettsclient.OpenOutput(cmd.Context(), c, id, lettsclient.OutputOpts{Stream: stream, Follow: follow})
-		})
+		c, err := clientForFirstAvailableScope(ac, hostID, dispatchOrAdmin)
+		if err != nil {
+			return nil, err
+		}
+		return lettsclient.OpenOutput(cmd.Context(), c, id, lettsclient.OutputOpts{Stream: stream, Follow: follow})
 	}
 	var rc io.ReadCloser
 	var err error

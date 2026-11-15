@@ -27,7 +27,7 @@ const (
 // stickyRetry wraps c with the sticky-retry policy: 3 attempts on
 // the same host with 100/500/2000ms jitter backoff, retrying network errors
 // and 5xx, propagating 4xx. Used for the idempotency-keyed create endpoints
-// (POST /v1/dispatch, POST /v1/exec/dispatch) where a retry is safe because the
+// (POST /v1/dispatch) where a retry is safe because the
 // Idempotency-Key guarantees the server won't create a duplicate mission.
 func stickyRetry(c *Client) *RetryClient {
 	return &RetryClient{Client: c, MaxRetries: 3, BackoffMs: DefaultBackoffMs}

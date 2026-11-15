@@ -87,8 +87,6 @@ func (g *StagingGC) drainNeedsRecalc(ctx context.Context) {
 	ttl := storage.TTLPolicy{
 		MissionSuccess: g.Cfg.Cleanup.SuccessTTL,
 		MissionFailed:  g.Cfg.Cleanup.FailedTTL,
-		ExecSuccess:    g.Cfg.Exec.ExecSuccessTTL,
-		ExecFailed:     g.Cfg.Exec.ExecFailedTTL,
 		StagingTTL:     g.Cfg.Cleanup.StagingTTL,
 		DownloadGrace:  g.Cfg.Cleanup.DownloadedGrace,
 	}

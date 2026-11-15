@@ -20,9 +20,6 @@ func MergeConfigs(base, overlay *lettsconfig.Config) *lettsconfig.Config {
 	if overlay.Auth.AdminToken != "" {
 		out.Auth.AdminToken = overlay.Auth.AdminToken
 	}
-	if overlay.Auth.ExecToken != "" {
-		out.Auth.ExecToken = overlay.Auth.ExecToken
-	}
 	if overlay.Defaults.Port != 0 {
 		out.Defaults.Port = overlay.Defaults.Port
 	}
@@ -92,7 +89,7 @@ func mergeDugdaleSlice(a, b []lettsconfig.Dugdale) []lettsconfig.Dugdale {
 
 // mergeDugdaleEntry overlays the right (overlay) onto the left (base):
 //   - non-empty scalars in overlay win (Host, Port, URL, Extends,
-//     MissionDir, Token, AdminToken, ExecToken).
+//     MissionDir, Token, AdminToken).
 //   - Runtime sub-struct is deep-merged: non-empty fields in overlay
 //     win; ValidateMissionFile preserved unless overlay explicitly
 //     differs (zero-value ambiguity for bool — best effort).
@@ -131,9 +128,6 @@ func mergeDugdaleEntry(base, overlay lettsconfig.Dugdale) lettsconfig.Dugdale {
 	}
 	if overlay.AdminToken != "" {
 		out.AdminToken = overlay.AdminToken
-	}
-	if overlay.ExecToken != "" {
-		out.ExecToken = overlay.ExecToken
 	}
 	if overlay.Runtime.MissionPathTemplate != "" {
 		out.Runtime.MissionPathTemplate = overlay.Runtime.MissionPathTemplate

@@ -130,9 +130,6 @@ func newTestStack(t *testing.T) *stack {
 			DefaultKillGrace:     150 * time.Millisecond,
 			ReaderPostExitGrace:  300 * time.Millisecond,
 		},
-		Exec: config.ExecConfig{
-			ExecSuccessTTL: time.Hour, ExecFailedTTL: 24 * time.Hour,
-		},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -194,10 +191,7 @@ func wireRoutesForTest(mux *http.ServeMux, cfg *config.DugdaleConfig, db *sql.DB
 	(&handlers.OutputHandler{DataDir: cfg.DataDir, DB: db}).Register(mux)
 	(&handlers.MissionsHandler{DB: db}).Register(mux)
 
-	// Wrap lifecycle routes with admin auth so the kind-gate inside
-	// restartOne/deleteOne can read the caller's scope from ctx. Without
-	// this, every restart/delete would 500 "missing identity" — matches
-	// the production wiring in cmd/dugdale/main.go.
+	// Lifecycle routes are admin-scoped, as in production.
 	lifecycleHandler := &handlers.LifecycleHandler{
 		DB: db, Cfg: cfg, DataDir: cfg.DataDir,
 		LaneManager: rt.Manager, Runtime: rt,

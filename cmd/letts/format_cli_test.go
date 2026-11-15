@@ -14,7 +14,7 @@ import (
 func formatStubServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mid := "01900000-0000-7000-8000-000000000001"
-	mission := `{"mission_id":"` + mid + `","mission_name":"report","status":"done","kind":"mission","time_created":1760000000000,"input":{"a":1}}`
+	mission := `{"mission_id":"` + mid + `","mission_name":"report","status":"done","time_created":1760000000000,"input":{"a":1}}`
 	mux := http.NewServeMux()
 	reply := func(body string) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {

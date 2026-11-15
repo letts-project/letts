@@ -130,7 +130,6 @@ func TestApplyConflictRuntimeChange(t *testing.T) {
 	// Insert a queued mission.
 	m := &storage.Mission{
 		ID:               "01900000-0000-7000-8000-000000000001",
-		Kind:             storage.KindMission,
 		Lane:             "lane1",
 		MissionName:      "test",
 		Status:           storage.StatusQueued,
@@ -183,7 +182,6 @@ func TestApplyConflictLaneRemoval(t *testing.T) {
 	mid := "01900000-0000-7000-8000-000000000002"
 	m := &storage.Mission{
 		ID:               mid,
-		Kind:             storage.KindMission,
 		Lane:             "remove",
 		MissionName:      "blocked",
 		Status:           storage.StatusQueued,
@@ -305,7 +303,7 @@ func TestApplyForcePruneTerminatesQueuedMissions(t *testing.T) {
 
 	mid := "01900000-0000-7000-8000-000000000099"
 	if err := storage.InsertMission(context.Background(), db, &storage.Mission{
-		ID: mid, Kind: storage.KindMission, Lane: "reaped",
+		ID: mid, Lane: "reaped",
 		MissionName: "blocked", Status: storage.StatusQueued,
 		InputFingerprint: "fp99", Input: []byte("{}"), TimeCreatedMs: 99000,
 	}); err != nil {

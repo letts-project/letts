@@ -94,9 +94,7 @@ func TestParseSelectorErrors(t *testing.T) {
 }
 
 // TestSelectorToListOpts asserts the wire-shape mapping: every field the
-// daemon understands round-trips, including MissionPrefix. Kind is always
-// "mission" — bulk selectors must never select exec records (those are
-// managed individually via `ctl exec`).
+// daemon understands round-trips, including MissionPrefix.
 func TestSelectorToListOpts(t *testing.T) {
 	s := Selector{
 		Status:        "done",
@@ -114,21 +112,10 @@ func TestSelectorToListOpts(t *testing.T) {
 		Lane:          "normal",
 		Mission:       "Demo",
 		MissionPrefix: "De",
-		Kind:          "mission",
 		SinceMs:       1714600000123,
 		UntilMs:       1714600099999,
 	}
 	if got != want {
 		t.Errorf("ToListOpts mismatch:\n got=%+v\nwant=%+v", got, want)
-	}
-}
-
-// TestSelectorToListOptsZeroValuePinsKind — even an empty selector (match
-// everything) must stay scoped to kind=mission so an unqualified bulk
-// `--selector` cannot touch exec rows.
-func TestSelectorToListOptsZeroValuePinsKind(t *testing.T) {
-	got := Selector{}.ToListOpts()
-	if got.Kind != "mission" {
-		t.Errorf("zero selector Kind=%q, want %q", got.Kind, "mission")
 	}
 }

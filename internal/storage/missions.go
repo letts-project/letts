@@ -14,10 +14,9 @@ func escapeLikePattern(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
-// Status/Kind/Outcome string constants — keep these as Go-typed constants for
+// Status/Outcome string constants — keep these as Go-typed constants for
 // compile-time safety; values match DB column text.
 type Status string
-type Kind string
 type Outcome string
 
 const (
@@ -25,9 +24,6 @@ const (
 	StatusRunning  Status = "running"
 	StatusDone     Status = "done"
 	StatusDeleting Status = "deleting"
-
-	KindMission Kind = "mission"
-	KindExec    Kind = "exec"
 
 	OutcomeSuccess Outcome = "success"
 	OutcomeFailed  Outcome = "failed"
@@ -41,11 +37,8 @@ const (
 // Mission mirrors the missions row.
 type Mission struct {
 	ID               string
-	Kind             Kind
 	Lane             string
 	MissionName      string
-	DisplayName      sql.NullString
-	GroupID          sql.NullString
 	Status           Status
 	Outcome          sql.NullString
 	FailReason       sql.NullString
@@ -117,14 +110,14 @@ func DeleteMissions(ctx context.Context, db DBOrConn, ids []string) error {
 // for stand-alone insert use db, for atomic insert with refs use *sql.Conn.
 func InsertMission(ctx context.Context, db DBOrConn, m *Mission) error {
 	const q = `INSERT INTO missions (
-		mission_id, kind, lane, mission_name, display_name, group_id, status,
+		mission_id, lane, mission_name, status,
 		outcome, fail_reason, fail_message, fail_details, exit_code, signal,
 		pid, pgid, proc_starttime, input, input_fingerprint, return_value,
 		truncated_stdout, truncated_stderr,
 		time_created, time_started, time_finished, timeout_ms, restarted_from
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	_, err := db.ExecContext(ctx, q,
-		m.ID, m.Kind, m.Lane, m.MissionName, m.DisplayName, m.GroupID, m.Status,
+		m.ID, m.Lane, m.MissionName, m.Status,
 		m.Outcome, m.FailReason, m.FailMessage, m.FailDetails, m.ExitCode, m.Signal,
 		m.PID, m.PGID, m.ProcStarttime, m.Input, m.InputFingerprint, m.ReturnValue,
 		boolToInt(m.TruncatedStdout), boolToInt(m.TruncatedStderr),
@@ -136,7 +129,7 @@ func InsertMission(ctx context.Context, db DBOrConn, m *Mission) error {
 	return nil
 }
 
-const missionSelectCols = `mission_id, kind, lane, mission_name, display_name, group_id,
+const missionSelectCols = `mission_id, lane, mission_name,
 	status, outcome, fail_reason, fail_message, fail_details, exit_code, signal,
 	pid, pgid, proc_starttime, input, input_fingerprint, return_value,
 	truncated_stdout, truncated_stderr, time_created, time_started, time_finished,
@@ -148,7 +141,7 @@ func scanMission(row interface {
 	var m Mission
 	var truncOut, truncErr int
 	err := row.Scan(
-		&m.ID, &m.Kind, &m.Lane, &m.MissionName, &m.DisplayName, &m.GroupID,
+		&m.ID, &m.Lane, &m.MissionName,
 		&m.Status, &m.Outcome, &m.FailReason, &m.FailMessage, &m.FailDetails,
 		&m.ExitCode, &m.Signal, &m.PID, &m.PGID, &m.ProcStarttime,
 		&m.Input, &m.InputFingerprint, &m.ReturnValue,
@@ -176,13 +169,13 @@ func GetMission(ctx context.Context, db DBOrConn, id string) (*Mission, error) {
 	return m, nil
 }
 
-// GetMissionLabels returns kind/lane/time_started_ms for one mission. Used
+// GetMissionLabels returns lane/time_started_ms for one mission. Used
 // by the repair paths to populate Prometheus labels at intent-replay time
 // when the original FinalizeInputs are not in memory.
-func GetMissionLabels(ctx context.Context, db DBOrConn, id string) (kind, lane string, timeStartedMs int64, err error) {
+func GetMissionLabels(ctx context.Context, db DBOrConn, id string) (lane string, timeStartedMs int64, err error) {
 	row := db.QueryRowContext(ctx,
-		`SELECT kind, lane, COALESCE(time_started, 0) FROM missions WHERE mission_id = ?`, id)
-	err = row.Scan(&kind, &lane, &timeStartedMs)
+		`SELECT lane, COALESCE(time_started, 0) FROM missions WHERE mission_id = ?`, id)
+	err = row.Scan(&lane, &timeStartedMs)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 	}
@@ -286,8 +279,6 @@ type ListFilter struct {
 	Lane          string
 	Mission       string // substring match on mission name
 	MissionPrefix string // anchored prefix match on mission name
-	Kind          string
-	GroupID       string // exec group filter
 	RestartedFrom string // missions restarted from this mission id
 	Order         string // "" / "created" (default) | "finished"
 	SinceMs       int64
@@ -312,14 +303,6 @@ type Cursor struct {
 func ListMissions(ctx context.Context, db DBOrConn, f ListFilter, after *Cursor, limit int) ([]Mission, error) {
 	var conds []string
 	var args []any
-	if f.Kind != "" {
-		conds = append(conds, "kind = ?")
-		args = append(args, f.Kind)
-	}
-	if f.GroupID != "" {
-		conds = append(conds, "group_id = ?")
-		args = append(args, f.GroupID)
-	}
 	if f.RestartedFrom != "" {
 		conds = append(conds, "restarted_from = ?")
 		args = append(args, f.RestartedFrom)

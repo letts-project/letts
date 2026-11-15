@@ -39,16 +39,16 @@ func CheckPermissions(path string, c *Config) error {
 }
 
 func hasPlainToken(c *Config) bool {
-	if IsPlainToken(c.Auth.Token) || IsPlainToken(c.Auth.AdminToken) || IsPlainToken(c.Auth.ExecToken) {
+	if IsPlainToken(c.Auth.Token) || IsPlainToken(c.Auth.AdminToken) {
 		return true
 	}
 	for _, d := range c.Dugdales {
-		if IsPlainToken(d.Token) || IsPlainToken(d.AdminToken) || IsPlainToken(d.ExecToken) {
+		if IsPlainToken(d.Token) || IsPlainToken(d.AdminToken) {
 			return true
 		}
 	}
 	for _, t := range c.Templates {
-		if IsPlainToken(t.Token) || IsPlainToken(t.AdminToken) || IsPlainToken(t.ExecToken) {
+		if IsPlainToken(t.Token) || IsPlainToken(t.AdminToken) {
 			return true
 		}
 	}

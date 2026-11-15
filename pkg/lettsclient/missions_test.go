@@ -17,7 +17,6 @@ func TestGetMissionDecodesAllFields(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{
 			"mission_id":"01900000-0000-7000-8000-000000000001",
-			"kind":"mission",
 			"lane":"normal",
 			"mission_name":"DemoMission",
 			"status":"done",
@@ -43,9 +42,6 @@ func TestGetMissionDecodesAllFields(t *testing.T) {
 	}
 	if m.MissionID != "01900000-0000-7000-8000-000000000001" {
 		t.Errorf("mission_id=%q", m.MissionID)
-	}
-	if m.Kind != "mission" {
-		t.Errorf("kind=%q", m.Kind)
 	}
 	if m.Lane != "normal" {
 		t.Errorf("lane=%q", m.Lane)
@@ -170,25 +166,6 @@ func TestListMissionsOmitsZeroValues(t *testing.T) {
 	}
 	if gotQuery != "" {
 		t.Errorf("empty opts should produce no query, got %q", gotQuery)
-	}
-}
-
-func TestListMissionsOptsEncodesGroupID(t *testing.T) {
-	var gotURL string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotURL = r.URL.String()
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"missions":[]}`))
-	}))
-	defer srv.Close()
-
-	c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
-	_, err := ListMissions(c, ListMissionsOpts{GroupID: "0192aaaa-0000-7000-8000-000000000000"})
-	if err != nil {
-		t.Fatalf("ListMissions: %v", err)
-	}
-	if !strings.Contains(gotURL, "group_id=0192aaaa-0000-7000-8000-000000000000") {
-		t.Errorf("URL %q missing group_id", gotURL)
 	}
 }
 

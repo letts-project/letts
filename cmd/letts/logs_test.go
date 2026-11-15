@@ -62,7 +62,7 @@ func TestLogsRespectsStreamAndFollow(t *testing.T) {
 }
 
 // TestLogsHonoursOutputFormat: the global --output flag reaches the renderer
-// for `logs`, `ctl missions output` and `ctl exec output`.
+// for `logs` and `ctl missions output`.
 func TestLogsHonoursOutputFormat(t *testing.T) {
 	mux := http.NewServeMux()
 	mid := "01900000-0000-7000-8000-000000000001"
@@ -79,7 +79,6 @@ func TestLogsHonoursOutputFormat(t *testing.T) {
 	for _, argv := range [][]string{
 		{"logs", mid},
 		{"ctl", "missions", "output", mid},
-		{"ctl", "exec", "output", mid},
 	} {
 		name := strings.Join(argv[:len(argv)-1], " ")
 		run := func(format string) string {

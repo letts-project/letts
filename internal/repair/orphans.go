@@ -130,8 +130,6 @@ func recalcZeroedTTLs(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB
 	ttl := storage.TTLPolicy{
 		MissionSuccess: cfg.Cleanup.SuccessTTL,
 		MissionFailed:  cfg.Cleanup.FailedTTL,
-		ExecSuccess:    cfg.Exec.ExecSuccessTTL,
-		ExecFailed:     cfg.Exec.ExecFailedTTL,
 		StagingTTL:     cfg.Cleanup.StagingTTL,
 		DownloadGrace:  cfg.Cleanup.DownloadedGrace,
 	}

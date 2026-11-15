@@ -35,7 +35,7 @@ func TestRepairResolvesIntentPathsAcrossDataDirRename(t *testing.T) {
 	// Stage the mission and tmp output under the OLD data_dir.
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: "normal",
+		ID: id, Lane: "normal",
 		MissionName: "RenameFixture", Status: storage.StatusRunning,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: time.Now().UnixMilli(),

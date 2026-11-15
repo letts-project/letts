@@ -99,7 +99,6 @@ func TestAdminApplyConflictLaneRemoval(t *testing.T) {
 	// Insert a queued mission in "drop" lane.
 	m := &storage.Mission{
 		ID:               "01900000-0000-7000-8000-000000000003",
-		Kind:             storage.KindMission,
 		Lane:             "drop",
 		MissionName:      "blocked",
 		Status:           storage.StatusQueued,
@@ -168,7 +167,6 @@ func TestAdminApplyForcePrune(t *testing.T) {
 	mid := "01900000-0000-7000-8000-000000000004"
 	m := &storage.Mission{
 		ID:               mid,
-		Kind:             storage.KindMission,
 		Lane:             "drop",
 		MissionName:      "blocked",
 		Status:           storage.StatusQueued,

@@ -134,6 +134,41 @@ func splitHosts(s string) []string {
 	return out
 }
 
+// computeWaitDeadline applies the --wait-timeout default rule:
+//   - explicit zero ("0", "0s", …) → infinite (zero time.Time)
+//   - explicit value   → now + value
+//   - unset, no -timeout → infinite
+//   - unset, --timeout → now + timeout + 30s grace
+//
+// Returns zero time.Time if no deadline. On a parse error or a negative
+// --wait-timeout returns a BadUsageError.
+func computeWaitDeadline(waitTimeoutFlag, timeoutFlag string, now time.Time) (time.Time, error) {
+	if waitTimeoutFlag == "0" {
+		return time.Time{}, nil // explicit infinite
+	}
+	if waitTimeoutFlag != "" {
+		d, err := time.ParseDuration(waitTimeoutFlag)
+		if err != nil {
+			return time.Time{}, NewBadUsageError("--wait-timeout: " + err.Error())
+		}
+		if d < 0 {
+			return time.Time{}, NewBadUsageError("--wait-timeout: must not be negative")
+		}
+		if d == 0 {
+			return time.Time{}, nil
+		}
+		return now.Add(d), nil
+	}
+	if timeoutFlag == "" {
+		return time.Time{}, nil // both unset → infinite
+	}
+	d, err := time.ParseDuration(timeoutFlag)
+	if err != nil {
+		return time.Time{}, NewBadUsageError("--timeout: " + err.Error())
+	}
+	return now.Add(d + 30*time.Second), nil
+}
+
 // runOne is the singlehost composite behind `letts run`. Steps:
 //  1. validate flags and resolve (host, lane);
 //  2. load input JSON (or accept pre-loaded bytes from a fan-out parent);
@@ -198,10 +233,6 @@ func runOne(cmd *cobra.Command, ac *appCtx, rf *runFlags, hostOverride string, i
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	// Use the same wait-deadline rule as `letts exec` instead
-	// of only honoring an explicit --wait-timeout. Unset with --timeout set →
-	// mission timeout + 30s grace; --wait-timeout=0 → infinite (was firing
-	// immediately); both unset → infinite.
 	deadline, derr := computeWaitDeadline(rf.waitTimeout, rf.timeout, time.Now())
 	if derr != nil {
 		return derr

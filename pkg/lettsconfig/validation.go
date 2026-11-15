@@ -249,18 +249,12 @@ func PlainTokenLocations(c *Config) []string {
 	if c.Auth.AdminToken != "" && IsPlainToken(c.Auth.AdminToken) {
 		out = append(out, "auth.admin_token")
 	}
-	if c.Auth.ExecToken != "" && IsPlainToken(c.Auth.ExecToken) {
-		out = append(out, "auth.exec_token")
-	}
 	for i, d := range c.Dugdales {
 		if d.Token != "" && IsPlainToken(d.Token) {
 			out = append(out, fmt.Sprintf("dugdales[%d:%s].token", i, d.ID))
 		}
 		if d.AdminToken != "" && IsPlainToken(d.AdminToken) {
 			out = append(out, fmt.Sprintf("dugdales[%d:%s].admin_token", i, d.ID))
-		}
-		if d.ExecToken != "" && IsPlainToken(d.ExecToken) {
-			out = append(out, fmt.Sprintf("dugdales[%d:%s].exec_token", i, d.ID))
 		}
 	}
 	// Templates can also carry plain tokens (extends merges
@@ -279,9 +273,6 @@ func PlainTokenLocations(c *Config) []string {
 		}
 		if t.AdminToken != "" && IsPlainToken(t.AdminToken) {
 			out = append(out, fmt.Sprintf("templates[%s].admin_token", name))
-		}
-		if t.ExecToken != "" && IsPlainToken(t.ExecToken) {
-			out = append(out, fmt.Sprintf("templates[%s].exec_token", name))
 		}
 	}
 	return out

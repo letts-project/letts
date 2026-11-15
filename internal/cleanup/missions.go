@@ -130,20 +130,10 @@ func (c *MissionCleaner) pickVictims(ctx context.Context) ([]string, error) {
 
 	nowMs := time.Now().UnixMilli()
 	cl := c.Cfg.Cleanup
-	ex := c.Cfg.Exec
 	cutoffSuccess := nowMs - cl.SuccessTTL.Milliseconds()
 	cutoffFailed := nowMs - cl.FailedTTL.Milliseconds()
-	cutoffExecS := nowMs - ex.ExecSuccessTTL.Milliseconds()
-	cutoffExecF := nowMs - ex.ExecFailedTTL.Milliseconds()
-	// Lost cleanup uses failed_ttl + lost_cleanup_grace —
-	// lost_cleanup_grace is ADDITIONAL retention on top of the normal
-	// failed TTL, not a replacement. The lost cleanup must
-	// pick its base TTL by kind, because exec_failed_ttl (default 24h)
-	// is typically shorter than mission failed_ttl (default 7d). Sharing
-	// one cutoff held lost exec rows for the longer of the two —
-	// observable as stale staging refs preserved past their exec budget.
-	cutoffLostMission := nowMs - (cl.FailedTTL + cl.LostCleanupGrace).Milliseconds()
-	cutoffLostExec := nowMs - (ex.ExecFailedTTL + cl.LostCleanupGrace).Milliseconds()
+	// lost_cleanup_grace is additional retention on top of failed_ttl.
+	cutoffLost := nowMs - (cl.FailedTTL + cl.LostCleanupGrace).Milliseconds()
 
 	// Gate on NOT EXISTS finalize intent. Without this gate
 	// cleanup could pick a row whose intent hasn't been applied yet
@@ -154,17 +144,13 @@ func (c *MissionCleaner) pickVictims(ctx context.Context) ([]string, error) {
 	// staging rows and tmp files until the periodic disk scan reaps.
 	q := `SELECT mission_id FROM missions
 	      WHERE status='done' AND time_finished IS NOT NULL AND (
-	        (kind='mission' AND outcome='success' AND time_finished < ?) OR
-	        (kind='mission' AND outcome IS NOT NULL AND outcome NOT IN ('success','lost') AND time_finished < ?) OR
-	        (kind='exec'    AND outcome='success' AND time_finished < ?) OR
-	        (kind='exec'    AND outcome IS NOT NULL AND outcome NOT IN ('success','lost') AND time_finished < ?) OR
-	        (kind='mission' AND outcome='lost' AND time_finished < ?) OR
-	        (kind='exec'    AND outcome='lost' AND time_finished < ?))
+	        (outcome='success' AND time_finished < ?) OR
+	        (outcome IS NOT NULL AND outcome NOT IN ('success','lost') AND time_finished < ?) OR
+	        (outcome='lost' AND time_finished < ?))
 	        AND NOT EXISTS (SELECT 1 FROM mission_finalize_intents fi WHERE fi.mission_id = missions.mission_id)
 	      ORDER BY time_finished LIMIT 1000`
 	newIDs, err := c.queryIDs(ctx, q,
-		cutoffSuccess, cutoffFailed, cutoffExecS, cutoffExecF,
-		cutoffLostMission, cutoffLostExec)
+		cutoffSuccess, cutoffFailed, cutoffLost)
 	if err != nil {
 		return nil, fmt.Errorf("query new: %w", err)
 	}
@@ -250,8 +236,6 @@ func (c *MissionCleaner) processBatch(ctx context.Context, victims []string) {
 	ttl := storage.TTLPolicy{
 		MissionSuccess: c.Cfg.Cleanup.SuccessTTL,
 		MissionFailed:  c.Cfg.Cleanup.FailedTTL,
-		ExecSuccess:    c.Cfg.Exec.ExecSuccessTTL,
-		ExecFailed:     c.Cfg.Exec.ExecFailedTTL,
 		StagingTTL:     c.Cfg.Cleanup.StagingTTL,
 		DownloadGrace:  c.Cfg.Cleanup.DownloadedGrace,
 	}

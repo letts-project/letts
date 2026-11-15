@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -17,7 +16,6 @@ import (
 	"letts/internal/ids"
 	"letts/internal/mission"
 	"letts/internal/server/handlers"
-	"letts/internal/server/middleware"
 	"letts/internal/storage"
 )
 
@@ -42,7 +40,7 @@ func bulkInsertMission(t *testing.T, db *sql.DB, dataDir string, status storage.
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: "normal",
+		ID: id, Lane: "normal",
 		MissionName: "BulkFixture", Status: status,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: time.Now().UnixMilli(),
@@ -67,15 +65,6 @@ func bulkInsertMission(t *testing.T, db *sql.DB, dataDir string, status storage.
 	_, _ = w.Append(eventfile.KindQueued, map[string]any{"time": time.Now().UnixMilli()}, true)
 	_ = w.Close()
 	return id
-}
-
-// asAdminReq injects an admin Identity into req's context, matching what
-// middleware.Auth does in production. Required since the kind-gate
-// consults the Identity in restartOne/deleteOne.
-func asAdminReq(req *http.Request) *http.Request {
-	return req.WithContext(context.WithValue(req.Context(),
-		middleware.IdentityCtxKey(),
-		middleware.Identity{Scope: middleware.ScopeAdmin}))
 }
 
 func bulkBody(t *testing.T, ids []string, force bool) *bytes.Buffer {
@@ -109,7 +98,7 @@ func TestBulkRestartMixedStatuses(t *testing.T) {
 	bogusID := ids.NewUUIDv7()
 
 	body := bulkBody(t, []string{doneID, queuedID, bogusID}, false)
-	r := asAdminReq(httptest.NewRequest("POST", "/v1/missions/bulk-restart", body))
+	r := httptest.NewRequest("POST", "/v1/missions/bulk-restart", body)
 	w := httptest.NewRecorder()
 	h.BulkRestart(w, r)
 	if w.Code != 200 {
@@ -139,7 +128,7 @@ func TestBulkDeleteSkipsRunningWithoutForce(t *testing.T) {
 	runningID := bulkInsertMission(t, db, dataDir, storage.StatusRunning)
 
 	body := bulkBody(t, []string{doneID, runningID}, false)
-	r := asAdminReq(httptest.NewRequest("POST", "/v1/missions/bulk-delete", body))
+	r := httptest.NewRequest("POST", "/v1/missions/bulk-delete", body)
 	w := httptest.NewRecorder()
 	h.BulkDelete(w, r)
 	if w.Code != 200 {
@@ -175,7 +164,7 @@ func TestBulkDeleteForceTrueAppliesToRunning(t *testing.T) {
 	}
 
 	body := bulkBody(t, []string{doneID, runningID}, true)
-	r := asAdminReq(httptest.NewRequest("POST", "/v1/missions/bulk-delete", body))
+	r := httptest.NewRequest("POST", "/v1/missions/bulk-delete", body)
 	w := httptest.NewRecorder()
 	h.BulkDelete(w, r)
 	if w.Code != 200 {
@@ -195,7 +184,7 @@ func TestBulkDeleteForceTrueAppliesToRunning(t *testing.T) {
 func TestBulkRestartEmptyIDsReturns400(t *testing.T) {
 	h, _, _, _ := bulkSetupHandler(t)
 	body := bytes.NewBufferString(`{"ids":[]}`)
-	r := asAdminReq(httptest.NewRequest("POST", "/v1/missions/bulk-restart", body))
+	r := httptest.NewRequest("POST", "/v1/missions/bulk-restart", body)
 	w := httptest.NewRecorder()
 	h.BulkRestart(w, r)
 	if w.Code != 400 {
@@ -206,7 +195,7 @@ func TestBulkRestartEmptyIDsReturns400(t *testing.T) {
 func TestBulkDeleteEmptyIDsReturns400(t *testing.T) {
 	h, _, _, _ := bulkSetupHandler(t)
 	body := bytes.NewBufferString(`{"ids":[]}`)
-	r := asAdminReq(httptest.NewRequest("POST", "/v1/missions/bulk-delete", body))
+	r := httptest.NewRequest("POST", "/v1/missions/bulk-delete", body)
 	w := httptest.NewRecorder()
 	h.BulkDelete(w, r)
 	if w.Code != 400 {
@@ -217,7 +206,7 @@ func TestBulkDeleteEmptyIDsReturns400(t *testing.T) {
 func TestBulkRestartBadJSONReturns400(t *testing.T) {
 	h, _, _, _ := bulkSetupHandler(t)
 	body := bytes.NewBufferString(`{"ids":notarray}`)
-	r := asAdminReq(httptest.NewRequest("POST", "/v1/missions/bulk-restart", body))
+	r := httptest.NewRequest("POST", "/v1/missions/bulk-restart", body)
 	w := httptest.NewRecorder()
 	h.BulkRestart(w, r)
 	if w.Code != 400 {

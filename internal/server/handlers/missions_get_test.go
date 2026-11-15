@@ -5,33 +5,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"letts/internal/ids"
 	"letts/internal/server/handlers"
-	"letts/internal/server/middleware"
 	"letts/internal/storage"
 )
-
-// withScope returns r with the given Scope injected via Identity in its
-// context — equivalent to what middleware.Auth() would do on success.
-// Without it, handlers calling RequireKindForScope would 500 on
-// "missing identity".
-func withScope(r *http.Request, scope middleware.Scope) *http.Request {
-	ctx := context.WithValue(r.Context(), middleware.IdentityCtxKey(),
-		middleware.Identity{Scope: scope})
-	return r.WithContext(ctx)
-}
 
 func insertTestMission(t *testing.T, db *sql.DB, status storage.Status, lane string, createdMs int64) string {
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
 		ID:               id,
-		Kind:             storage.KindMission,
 		Lane:             lane,
 		MissionName:      "FixtureMission",
 		Status:           status,
@@ -64,7 +51,7 @@ func TestMissionsGetByIDReturnsResource(t *testing.T) {
 	h, db := setupMissionsGet(t)
 	id := insertTestMission(t, db, storage.StatusQueued, "normal", time.Now().UnixMilli())
 
-	r := withScope(httptest.NewRequest("GET", "/v1/missions/"+id, nil), middleware.ScopeDispatch)
+	r := httptest.NewRequest("GET", "/v1/missions/"+id, nil)
 	r.SetPathValue("id", id)
 	w := httptest.NewRecorder()
 	h.GetByID(w, r)
@@ -90,7 +77,7 @@ func TestMissionsGetByIDReturnsResource(t *testing.T) {
 func TestMissionsGetByIDNotFound(t *testing.T) {
 	h, _ := setupMissionsGet(t)
 	bogus := ids.NewUUIDv7()
-	r := withScope(httptest.NewRequest("GET", "/v1/missions/"+bogus, nil), middleware.ScopeDispatch)
+	r := httptest.NewRequest("GET", "/v1/missions/"+bogus, nil)
 	r.SetPathValue("id", bogus)
 	w := httptest.NewRecorder()
 	h.GetByID(w, r)
@@ -101,7 +88,7 @@ func TestMissionsGetByIDNotFound(t *testing.T) {
 
 func TestMissionsGetByIDInvalidUUID(t *testing.T) {
 	h, _ := setupMissionsGet(t)
-	r := withScope(httptest.NewRequest("GET", "/v1/missions/notuuid", nil), middleware.ScopeDispatch)
+	r := httptest.NewRequest("GET", "/v1/missions/notuuid", nil)
 	r.SetPathValue("id", "notuuid")
 	w := httptest.NewRecorder()
 	h.GetByID(w, r)
@@ -118,7 +105,7 @@ func TestMissionsGetByIDDeletingReturns404(t *testing.T) {
 	h, db := setupMissionsGet(t)
 	id := insertTestMission(t, db, storage.StatusDeleting, "normal", time.Now().UnixMilli())
 
-	r := withScope(httptest.NewRequest("GET", "/v1/missions/"+id, nil), middleware.ScopeDispatch)
+	r := httptest.NewRequest("GET", "/v1/missions/"+id, nil)
 	r.SetPathValue("id", id)
 	w := httptest.NewRecorder()
 	h.GetByID(w, r)
@@ -150,7 +137,7 @@ func TestMissionsGetByIDIncludesOutputsFromRefs(t *testing.T) {
 		t.Fatalf("insert ref: %v", err)
 	}
 
-	r := withScope(httptest.NewRequest("GET", "/v1/missions/"+id, nil), middleware.ScopeDispatch)
+	r := httptest.NewRequest("GET", "/v1/missions/"+id, nil)
 	r.SetPathValue("id", id)
 	w := httptest.NewRecorder()
 	h.GetByID(w, r)
@@ -280,46 +267,6 @@ func TestMissionsListFilterByStatus(t *testing.T) {
 	}
 }
 
-func TestMissionsListFilterByGroupID(t *testing.T) {
-	h, db := setupMissionsGet(t)
-
-	groupA := "0192aaaa-0000-7000-8000-000000000000"
-	groupB := "0192bbbb-0000-7000-8000-000000000000"
-
-	for i, gid := range []string{groupA, groupA, groupA, groupB, groupB} {
-		m := &storage.Mission{
-			ID:            fmt.Sprintf("0192dddd-0000-7000-8000-00000000000%d", i),
-			Kind:          storage.KindExec,
-			MissionName:   "exec",
-			Lane:          "light",
-			Status:        storage.StatusQueued,
-			Input:         []byte(`{}`),
-			TimeCreatedMs: int64(1700000000000 + i),
-			GroupID:       sql.NullString{String: gid, Valid: true},
-		}
-		if err := storage.InsertMission(context.Background(), db, m); err != nil {
-			t.Fatalf("insert: %v", err)
-		}
-	}
-
-	r := httptest.NewRequest("GET", "/v1/missions?group_id="+groupA, nil)
-	w := httptest.NewRecorder()
-	h.List(w, r)
-
-	if w.Code != 200 {
-		t.Fatalf("status=%d, want 200; body=%s", w.Code, w.Body.String())
-	}
-	var resp struct {
-		Missions []map[string]any `json:"missions"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v; body=%s", err, w.Body.String())
-	}
-	if len(resp.Missions) != 3 {
-		t.Fatalf("got %d missions, want 3", len(resp.Missions))
-	}
-}
-
 func TestMissionsListFilterByRestartedFrom(t *testing.T) {
 	h, db := setupMissionsGet(t)
 
@@ -327,7 +274,6 @@ func TestMissionsListFilterByRestartedFrom(t *testing.T) {
 	for i, from := range []string{"", orig, orig, ""} {
 		m := &storage.Mission{
 			ID:            fmt.Sprintf("0192ffff-0000-7000-8000-00000000000%d", i),
-			Kind:          storage.KindMission,
 			MissionName:   "m",
 			Lane:          "light",
 			Status:        storage.StatusQueued,
@@ -387,7 +333,7 @@ func insertDoneMission(t *testing.T, db *sql.DB, lane string, createdMs, finishe
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: lane, MissionName: "Fixture",
+		ID: id, Lane: lane, MissionName: "Fixture",
 		Status: storage.StatusDone, Outcome: sql.NullString{String: "failed", Valid: true},
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs:  createdMs,
@@ -434,79 +380,5 @@ func TestMissionsListOrderInvalid(t *testing.T) {
 	h.List(w, r)
 	if w.Code != 400 {
 		t.Fatalf("status=%d, want 400", w.Code)
-	}
-}
-
-// insertExecMissionForTest inserts a mission row with kind='exec', used by the
-// kind-gating tests across missions_get / events / output.
-func insertExecMissionForTest(t *testing.T, db *sql.DB, status storage.Status) string {
-	t.Helper()
-	id := ids.NewUUIDv7()
-	m := storage.Mission{
-		ID:               id,
-		Kind:             storage.KindExec,
-		Lane:             "exec",
-		MissionName:      "ExecFixture",
-		Status:           status,
-		Input:            []byte(`{}`),
-		InputFingerprint: "fp",
-		TimeCreatedMs:    time.Now().UnixMilli(),
-	}
-	if err := storage.InsertMission(context.Background(), db, &m); err != nil {
-		t.Fatalf("insert exec mission: %v", err)
-	}
-	return id
-}
-
-// TestMissionsGetByIDKindGated covers kind gating: dispatch tokens cannot read
-// kind='exec' rows, exec tokens cannot read kind='mission' rows, admin tokens
-// see everything. Mismatch returns 403 forbidden_kind.
-func TestMissionsGetByIDKindGated(t *testing.T) {
-	h, db := setupMissionsGet(t)
-	mid := insertTestMission(t, db, storage.StatusDone, "normal", time.Now().UnixMilli())
-	xid := insertExecMissionForTest(t, db, storage.StatusDone)
-
-	call := func(id string, scope middleware.Scope) *httptest.ResponseRecorder {
-		r := withScope(httptest.NewRequest("GET", "/v1/missions/"+id, nil), scope)
-		r.SetPathValue("id", id)
-		w := httptest.NewRecorder()
-		h.GetByID(w, r)
-		return w
-	}
-
-	// dispatch on exec → 403
-	w := call(xid, middleware.ScopeDispatch)
-	if w.Code != 403 {
-		t.Errorf("dispatch on exec: code=%d, want 403; body=%s", w.Code, w.Body.String())
-	}
-	if got := parseJSON(t, w.Body.Bytes())["error"]; got != "forbidden_kind" {
-		t.Errorf("error=%v, want forbidden_kind", got)
-	}
-
-	// exec on mission → 403
-	w = call(mid, middleware.ScopeExec)
-	if w.Code != 403 {
-		t.Errorf("exec on mission: code=%d, want 403", w.Code)
-	}
-	if got := parseJSON(t, w.Body.Bytes())["error"]; got != "forbidden_kind" {
-		t.Errorf("error=%v, want forbidden_kind", got)
-	}
-
-	// admin on either → 200
-	if w := call(mid, middleware.ScopeAdmin); w.Code != 200 {
-		t.Errorf("admin on mission: code=%d, want 200", w.Code)
-	}
-	if w := call(xid, middleware.ScopeAdmin); w.Code != 200 {
-		t.Errorf("admin on exec: code=%d, want 200", w.Code)
-	}
-
-	// dispatch on mission → 200 (sanity)
-	if w := call(mid, middleware.ScopeDispatch); w.Code != 200 {
-		t.Errorf("dispatch on mission: code=%d, want 200", w.Code)
-	}
-
-	// exec on exec → 200 (sanity)
-	if w := call(xid, middleware.ScopeExec); w.Code != 200 {
-		t.Errorf("exec on exec: code=%d, want 200", w.Code)
 	}
 }

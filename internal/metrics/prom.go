@@ -36,14 +36,14 @@ var (
 
 	missionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "letts_missions_total",
-		Help: "Total missions terminated, by kind/lane/outcome.",
-	}, []string{"kind", "lane", "outcome"})
+		Help: "Total missions terminated, by lane/outcome.",
+	}, []string{"lane", "outcome"})
 
 	missionDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "letts_mission_duration_seconds",
 		Help:    "Mission wallclock duration from running → done.",
 		Buckets: prometheus.ExponentialBuckets(0.05, 2, 20), // 50ms .. ~7.5h
-	}, []string{"kind", "lane", "outcome"})
+	}, []string{"lane", "outcome"})
 
 	laneQueued = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "letts_lane_queued",
@@ -102,10 +102,10 @@ func SetInfo(version, commit string) {
 }
 
 // ObserveMissionDone records one terminal mission outcome.
-func ObserveMissionDone(kind, lane, outcome string, duration time.Duration) {
+func ObserveMissionDone(lane, outcome string, duration time.Duration) {
 	l := mapLane(lane)
-	missionsTotal.WithLabelValues(kind, l, outcome).Inc()
-	missionDuration.WithLabelValues(kind, l, outcome).Observe(duration.Seconds())
+	missionsTotal.WithLabelValues(l, outcome).Inc()
+	missionDuration.WithLabelValues(l, outcome).Observe(duration.Seconds())
 }
 
 // ObserveHTTP records one HTTP request. route MUST be the routing template

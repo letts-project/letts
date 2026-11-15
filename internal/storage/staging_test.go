@@ -203,29 +203,6 @@ func TestMarkStagingDeletingIfExpiredFlipsExpiredRow(t *testing.T) {
 	}
 }
 
-func TestLookupStagingByContent(t *testing.T) {
-	db := setupDB(t)
-	id := ids.NewUUIDv7()
-	s := newTestStaging(id)
-	_ = InsertStaging(context.Background(), db, s)
-
-	// Not findable while uploading
-	_, err := LookupStagingByContent(context.Background(), db, "abc123", 1024)
-	if err != ErrNotFound {
-		t.Errorf("expected ErrNotFound for uploading, got %v", err)
-	}
-
-	// Complete it, then it should be findable
-	_ = MarkStagingComplete(context.Background(), db, id, "abc123", 1024, 3000, 9000)
-	got, err := LookupStagingByContent(context.Background(), db, "abc123", 1024)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.StagingID != id {
-		t.Errorf("got id %q, want %q", got.StagingID, id)
-	}
-}
-
 func TestListExpiredStaging(t *testing.T) {
 	db := setupDB(t)
 

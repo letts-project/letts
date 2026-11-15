@@ -17,7 +17,6 @@ import (
 	"letts/internal/eventfile"
 	"letts/internal/ids"
 	"letts/internal/server/handlers"
-	"letts/internal/server/middleware"
 	"letts/internal/storage"
 )
 
@@ -33,7 +32,6 @@ func setupEventsTest(t *testing.T) (*handlers.EventsHandler, string, string) {
 	// Create mission row.
 	m := &storage.Mission{
 		ID:               missionID,
-		Kind:             storage.KindMission,
 		Lane:             "default",
 		MissionName:      "test-events",
 		Status:           storage.StatusQueued,
@@ -83,7 +81,7 @@ func TestEventsStreamAllEvents(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	req := withScope(httptest.NewRequest("GET", "/v1/missions/"+missionID+"/events", nil), middleware.ScopeDispatch)
+	req := httptest.NewRequest("GET", "/v1/missions/"+missionID+"/events", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -138,8 +136,8 @@ func TestEventsStreamDoneMissionWithoutTerminalEventDoesNotHang(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	req := withScope(httptest.NewRequest("GET",
-		"/v1/missions/"+missionID+"/events?follow=true", nil).WithContext(ctx), middleware.ScopeDispatch)
+	req := httptest.NewRequest("GET",
+		"/v1/missions/"+missionID+"/events?follow=true", nil).WithContext(ctx)
 	rec := httptest.NewRecorder()
 
 	done := make(chan struct{})
@@ -170,7 +168,7 @@ func TestEventsStreamMissionNotFound(t *testing.T) {
 	h.Register(mux)
 
 	fakeID := ids.NewUUIDv7()
-	req := withScope(httptest.NewRequest("GET", "/v1/missions/"+fakeID+"/events", nil), middleware.ScopeDispatch)
+	req := httptest.NewRequest("GET", "/v1/missions/"+fakeID+"/events", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -185,7 +183,6 @@ func TestEventsStreamDeletingMission(t *testing.T) {
 	missionID := ids.NewUUIDv7()
 	m := &storage.Mission{
 		ID:               missionID,
-		Kind:             storage.KindMission,
 		Lane:             "default",
 		MissionName:      "deleting-test",
 		Status:           storage.StatusDeleting,
@@ -201,7 +198,7 @@ func TestEventsStreamDeletingMission(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	req := withScope(httptest.NewRequest("GET", "/v1/missions/"+missionID+"/events", nil), middleware.ScopeDispatch)
+	req := httptest.NewRequest("GET", "/v1/missions/"+missionID+"/events", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -217,7 +214,7 @@ func TestEventsStreamInvalidID(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	req := withScope(httptest.NewRequest("GET", "/v1/missions/not-a-uuid/events", nil), middleware.ScopeDispatch)
+	req := httptest.NewRequest("GET", "/v1/missions/not-a-uuid/events", nil)
 	w := httptest.NewRecorder()
 	mux.ServeHTTP(w, req)
 
@@ -241,14 +238,8 @@ func TestEventsStreamFollow(t *testing.T) {
 	mux := http.NewServeMux()
 	h.Register(mux)
 
-	// Inject a Dispatch identity for the kind-gate check (server-side; the
-	// real binary does this via middleware.Auth, which the test bypasses).
-	wrapped := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		mux.ServeHTTP(rw, withScope(r, middleware.ScopeDispatch))
-	})
-
 	// Use a server that supports streaming (httptest.NewServer, not recorder).
-	server := httptest.NewServer(wrapped)
+	server := httptest.NewServer(mux)
 	defer server.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -309,75 +300,6 @@ func TestEventsStreamFollow(t *testing.T) {
 	}
 }
 
-// TestEventsStreamKindGated: dispatch tokens hitting an
-// exec mission and exec tokens hitting a normal mission both get 403
-// forbidden_kind; admin sees both.
-func TestEventsStreamKindGated(t *testing.T) {
-	db := setupDB(t)
-	dataDir := t.TempDir()
-
-	// kind='mission' row
-	mid := ids.NewUUIDv7()
-	if err := storage.InsertMission(context.Background(), db, &storage.Mission{
-		ID: mid, Kind: storage.KindMission, Lane: "x", MissionName: "m",
-		Status: storage.StatusDone, InputFingerprint: "fp",
-		Input: []byte("{}"), TimeCreatedMs: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("insert mission: %v", err)
-	}
-	// kind='exec' row
-	xid := ids.NewUUIDv7()
-	if err := storage.InsertMission(context.Background(), db, &storage.Mission{
-		ID: xid, Kind: storage.KindExec, Lane: "x", MissionName: "x",
-		Status: storage.StatusDone, InputFingerprint: "fp",
-		Input: []byte("{}"), TimeCreatedMs: time.Now().UnixMilli(),
-	}); err != nil {
-		t.Fatalf("insert exec: %v", err)
-	}
-	// Pre-create an empty events file for both so reads don't error on missing files.
-	for _, id := range []string{mid, xid} {
-		shard, _ := ids.ShardPath(id)
-		dir := filepath.Join(dataDir, "output", shard)
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-		ew, err := eventfile.Create(dir, id)
-		if err != nil {
-			t.Fatalf("create events: %v", err)
-		}
-		_, _ = ew.Append(eventfile.KindQueued, map[string]any{}, false)
-		_ = ew.AppendDoneIdempotent(map[string]any{"outcome": "success"}, 1)
-		_ = ew.Close()
-	}
-
-	h := &handlers.EventsHandler{DataDir: dataDir, DB: db}
-	mux := http.NewServeMux()
-	h.Register(mux)
-
-	call := func(id string, scope middleware.Scope) *httptest.ResponseRecorder {
-		req := withScope(httptest.NewRequest("GET", "/v1/missions/"+id+"/events", nil), scope)
-		w := httptest.NewRecorder()
-		mux.ServeHTTP(w, req)
-		return w
-	}
-
-	// dispatch on exec → 403
-	if w := call(xid, middleware.ScopeDispatch); w.Code != 403 {
-		t.Errorf("dispatch on exec: code=%d, want 403; body=%s", w.Code, w.Body.String())
-	}
-	// exec on mission → 403
-	if w := call(mid, middleware.ScopeExec); w.Code != 403 {
-		t.Errorf("exec on mission: code=%d, want 403", w.Code)
-	}
-	// admin on either → 200
-	if w := call(mid, middleware.ScopeAdmin); w.Code != 200 {
-		t.Errorf("admin on mission: code=%d, want 200", w.Code)
-	}
-	if w := call(xid, middleware.ScopeAdmin); w.Code != 200 {
-		t.Errorf("admin on exec: code=%d, want 200", w.Code)
-	}
-}
-
 // nonFlusherRW is a ResponseWriter that does NOT implement http.Flusher.
 // Used by TestEventsStreamLogsFlusherFallback to simulate a misbehaving
 // middleware wrapper that swallows the underlying Flusher.
@@ -415,7 +337,6 @@ func TestEventsStreamLogsFlusherFallback(t *testing.T) {
 	ctx, cancel := context.WithTimeout(req.Context(), 500*time.Millisecond)
 	defer cancel()
 	req = req.WithContext(ctx)
-	req = withScope(req, middleware.ScopeDispatch)
 	h.Stream(w, req)
 
 	if w.status != 0 && w.status != 200 {
@@ -433,7 +354,7 @@ func TestEventsStreamAbortsWhenFileUnreadable(t *testing.T) {
 	h, missionID, _ := setupEventsTest(t)
 	mux := http.NewServeMux()
 	h.Register(mux)
-	req := withScope(httptest.NewRequest("GET", "/v1/missions/"+missionID+"/events", nil), middleware.ScopeDispatch)
+	req := httptest.NewRequest("GET", "/v1/missions/"+missionID+"/events", nil)
 	defer func() {
 		if r := recover(); r != http.ErrAbortHandler {
 			t.Fatalf("recovered %v, want http.ErrAbortHandler", r)

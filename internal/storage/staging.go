@@ -193,22 +193,6 @@ func MarkStagingDeletingIfExpired(ctx context.Context, db DBOrConn, id string, n
 	return nil
 }
 
-// LookupStagingByContent returns a complete staging file matching sha256+size.
-// Uses the partial index staging_by_sha (state='complete' only).
-// Returns ErrNotFound if no matching complete row exists.
-func LookupStagingByContent(ctx context.Context, db DBOrConn, sha256 string, size int64) (*StagingFile, error) {
-	var s StagingFile
-	err := db.QueryRowContext(ctx, `SELECT staging_id, state, sha256, size, bytes_received,
-		path, time_created, time_updated, time_expires, downloaded_at FROM staging_files
-		WHERE state='complete' AND sha256=? AND size=? LIMIT 1`, sha256, size).Scan(
-		&s.StagingID, &s.State, &s.Sha256, &s.Size, &s.BytesReceived, &s.Path,
-		&s.TimeCreatedMs, &s.TimeUpdatedMs, &s.TimeExpiresMs, &s.DownloadedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	return &s, err
-}
-
 // StagingWithRef pairs a staging file with the ref kind/role linking it to a
 // mission. Returned by ListStagingByMission.
 type StagingWithRef struct {

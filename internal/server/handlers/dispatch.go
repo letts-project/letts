@@ -49,6 +49,19 @@ func fileRoles(files []FileRef) []string {
 	return out
 }
 
+// firstDuplicate returns the first repeated value in keys, or "" if all
+// values are unique.
+func firstDuplicate(keys []string) string {
+	seen := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		if _, ok := seen[k]; ok {
+			return k
+		}
+		seen[k] = struct{}{}
+	}
+	return ""
+}
+
 // cleanupOrphanMissionFiles removes every file dispatch (steps 3-13)
 // may have created under <data_dir>/output/<shard>/ for missionID plus
 // the staged workdir. Used by both the orphan-from-crash branch
@@ -220,7 +233,7 @@ func (h *DispatchHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject duplicate file roles (mirrors the exec in[]/out[] dedup).
+	// Reject duplicate file roles.
 	// A deterministic client error must be 400, not a 500 from the
 	// msr_unique_role UNIQUE constraint inside the writer tx — the
 	// PHP client sticky-retries 5xx, storming the daemon with a malformed request.
@@ -258,7 +271,6 @@ func (h *DispatchHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteError(w, 409, "idempotency_conflict", "fingerprint mismatch on existing mission",
 				map[string]any{"existing": map[string]any{
 					"mission_id": missionID,
-					"kind":       existing.Kind,
 					"mission":    existing.MissionName,
 					"lane":       existing.Lane,
 					"status":     existing.Status,
@@ -434,7 +446,6 @@ func (h *DispatchHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		// Insert mission row.
 		m := &storage.Mission{
 			ID:               missionID,
-			Kind:             storage.KindMission,
 			Lane:             req.Lane,
 			MissionName:      req.Mission,
 			Status:           storage.StatusQueued,
@@ -477,8 +488,6 @@ func (h *DispatchHandler) Dispatch(w http.ResponseWriter, r *http.Request) {
 		ttl := storage.TTLPolicy{
 			MissionSuccess: h.Cfg.Cleanup.SuccessTTL,
 			MissionFailed:  h.Cfg.Cleanup.FailedTTL,
-			ExecSuccess:    h.Cfg.Exec.ExecSuccessTTL,
-			ExecFailed:     h.Cfg.Exec.ExecFailedTTL,
 			StagingTTL:     h.Cfg.Cleanup.StagingTTL,
 			DownloadGrace:  h.Cfg.Cleanup.DownloadedGrace,
 		}

@@ -21,11 +21,10 @@ type FanOutResult[T any] struct {
 // FanOutByID runs fn with each candidate host's admin client concurrently
 // and resolves the outcomes by the rules of fanOutByIDHosts. Running on EVERY
 // candidate host makes it safe only for idempotent reads (it backs the locate
-// step of LocateThenActByID); reads open to non-admin tokens go through
-// getMissionByID or fanOutByIDHosts with callWithKindScopes. Mutating
-// operations (restart/kill/delete) must go through LocateThenActByID instead —
-// fanning a mutation out to all hosts would execute it everywhere the id
-// exists.
+// step of LocateThenActByID); reads open to the dispatch token go through
+// getMissionByID or fanOutByIDHosts. Mutating operations (restart/kill/delete)
+// must go through LocateThenActByID instead — fanning a mutation out to all
+// hosts would execute it everywhere the id exists.
 func FanOutByID[T any](ac *appCtx, match []string, fn func(*lettsclient.Client) (T, error)) (T, string, error) {
 	return fanOutByIDHosts(ac, match, func(hostID string) (T, error) {
 		c, err := ac.ClientForHost(hostID, lettsconfig.ScopeAdmin)
@@ -54,11 +53,11 @@ func FanOutByID[T any](ac *appCtx, match []string, fn func(*lettsclient.Client) 
 //  2. Act: fn runs against the single owning host only.
 //
 // Locating deliberately uses the admin scope (the scope the mutation itself
-// requires) with no dispatch/exec fallback, so an operator who cannot
-// perform the mutation cannot probe ids through this path either. A mutation
-// 404 after a successful locate (the row expired in between) surfaces as a
-// normal error from fn. fn must address the same id that was located —
-// the helper cannot enforce that the closure and the locate agree.
+// requires) with no dispatch fallback, so an operator who cannot perform the
+// mutation cannot probe ids through this path either. A mutation 404 after a
+// successful locate (the row expired in between) surfaces as a normal error
+// from fn. fn must address the same id that was located — the helper cannot
+// enforce that the closure and the locate agree.
 func LocateThenActByID[T any](ac *appCtx, id string, match []string, fn func(*lettsclient.Client) (T, error)) (T, string, error) {
 	var zero T
 	_, hostID, err := FanOutByID(ac, match, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
@@ -164,40 +163,10 @@ func clientForFirstAvailableScope(ac *appCtx, hostID string, scopes []lettsconfi
 	return nil, lastErr
 }
 
-// readScopesMission and readScopesExec order the tokens tried for reads that
-// any of the three scopes may serve, depending on the mission's kind.
-// inspectScopes orders them for lane/daemon summaries, whose queue counts
-// the daemon narrows to the token's kind unless the token is admin.
-var (
-	readScopesMission = []lettsconfig.Scope{lettsconfig.ScopeDispatch, lettsconfig.ScopeExec, lettsconfig.ScopeAdmin}
-	readScopesExec    = []lettsconfig.Scope{lettsconfig.ScopeExec, lettsconfig.ScopeDispatch, lettsconfig.ScopeAdmin}
-	inspectScopes     = []lettsconfig.Scope{lettsconfig.ScopeAdmin, lettsconfig.ScopeDispatch, lettsconfig.ScopeExec}
-)
+// dispatchOrAdmin orders the tokens tried for endpoints that either scope
+// may call.
+var dispatchOrAdmin = []lettsconfig.Scope{lettsconfig.ScopeDispatch, lettsconfig.ScopeAdmin}
 
-// callWithKindScopes calls fn with a client for each configured scope in
-// order, moving on only while the daemon rejects the token with 403
-// forbidden_kind (the token is valid but its scope may not touch this
-// mission's kind). Returns the forbidden_kind error when no later scope is
-// configured, else the last configuration error.
-func callWithKindScopes[T any](ac *appCtx, hostID string, scopes []lettsconfig.Scope, fn func(*lettsclient.Client) (T, error)) (T, error) {
-	var zero T
-	var forbidden, cfgErr error
-	for _, s := range scopes {
-		c, err := ac.ClientForHost(hostID, s)
-		if err != nil {
-			cfgErr = err
-			continue
-		}
-		v, err := fn(c)
-		var he *lettsclient.HTTPError
-		if errors.As(err, &he) && he.Status == 403 && he.Code == "forbidden_kind" {
-			forbidden = err
-			continue
-		}
-		return v, err
-	}
-	if forbidden != nil {
-		return zero, forbidden
-	}
-	return zero, cfgErr
-}
+// adminOrDispatch is the same pair for the inspection commands, which prefer
+// the admin token.
+var adminOrDispatch = []lettsconfig.Scope{lettsconfig.ScopeAdmin, lettsconfig.ScopeDispatch}

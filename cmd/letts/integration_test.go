@@ -193,7 +193,6 @@ func TestIntegrationE2EHappyPath(t *testing.T) {
 	})
 	stub.SetMission(&stubMission{
 		MissionID: knownMissionID,
-		Kind:      "mission",
 		Lane:      "normal",
 		Status:    "done",
 		Outcome:   "success",
@@ -356,7 +355,6 @@ func TestIntegrationRunMissionFailed(t *testing.T) {
 	// Pre-seed a mission row so the events handler treats it as registered.
 	stub.SetMission(&stubMission{
 		MissionID: missionID,
-		Kind:      "mission",
 		Lane:      "normal",
 		Status:    "queued",
 	})
@@ -416,7 +414,7 @@ func TestIntegrationRunRootQuietSuppressesEvents(t *testing.T) {
 	cfgPath := writeMultiHostYAML(t, tmp, map[string]string{"s1": stub.URL()})
 
 	runOnce := func(id string, extra ...string) string {
-		stub.SetMission(&stubMission{MissionID: id, Kind: "mission", Lane: "normal", Status: "queued"})
+		stub.SetMission(&stubMission{MissionID: id, Lane: "normal", Status: "queued"})
 		stub.ScriptMission(id, []string{
 			`{"seq":1,"event":"queued","mission_id":"` + id + `"}`,
 			`{"seq":2,"event":"done","outcome":"success","return":{"ok":true}}`,
@@ -450,7 +448,6 @@ func TestIntegrationRunWaitTimeout(t *testing.T) {
 	const missionID = "01900000-0000-7000-8000-0000000000d1"
 	stub.SetMission(&stubMission{
 		MissionID: missionID,
-		Kind:      "mission",
 		Lane:      "normal",
 		Status:    "queued",
 	})
@@ -498,7 +495,6 @@ func TestIntegrationByIDFanOut(t *testing.T) {
 	// stubB: pre-seed the mission row so GetMission returns 200.
 	stubB.SetMission(&stubMission{
 		MissionID: missionID,
-		Kind:      "mission",
 		Lane:      "normal",
 		Status:    "done",
 		Outcome:   "success",
@@ -534,22 +530,17 @@ func TestIntegrationDestructiveByIDConflictExecutesNothing(t *testing.T) {
 	verbs := []struct {
 		name string
 		args []string
-		kind string
 	}{
-		{"missions restart", []string{"ctl", "missions", "restart", missionID}, "mission"},
-		{"missions kill", []string{"ctl", "missions", "kill", missionID}, "mission"},
-		{"missions delete", []string{"ctl", "missions", "delete", missionID}, "mission"},
-		// ctl exec kill/delete delegate to the same runners; prove the
-		// delegation inherits locate-then-act for exec records too.
-		{"exec kill", []string{"ctl", "exec", "kill", missionID}, "exec"},
-		{"exec delete", []string{"ctl", "exec", "delete", missionID}, "exec"},
+		{"missions restart", []string{"ctl", "missions", "restart", missionID}},
+		{"missions kill", []string{"ctl", "missions", "kill", missionID}},
+		{"missions delete", []string{"ctl", "missions", "delete", missionID}},
 	}
 	for _, v := range verbs {
 		t.Run(v.name, func(t *testing.T) {
 			stubA := newStubDugdale(t)
 			stubB := newStubDugdale(t)
 			row := &stubMission{
-				MissionID: missionID, Kind: v.kind, Lane: "normal",
+				MissionID: missionID, Lane: "normal",
 				Status: "done", Outcome: "failed",
 			}
 			stubA.SetMission(row)
@@ -589,7 +580,7 @@ func TestIntegrationDestructiveByIDSingleOwner(t *testing.T) {
 	owner := newStubDugdale(t)
 	other := newStubDugdale(t)
 	owner.SetMission(&stubMission{
-		MissionID: missionID, Kind: "mission", Lane: "normal",
+		MissionID: missionID, Lane: "normal",
 		Status: "done", Outcome: "failed",
 	})
 

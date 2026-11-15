@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"letts/pkg/lettsclient"
-	"letts/pkg/lettsconfig"
 )
 
 // TestCtlMissionsListJSONFormat verifies that --output=json round-trips the
@@ -90,32 +89,6 @@ func TestCtlMissionsListTextFormat(t *testing.T) {
 	}
 	if dataLines != 2 {
 		t.Errorf("want 2 data rows, got %d in %q", dataLines, s)
-	}
-}
-
-// TestCtlMissionsListOmitsGroupIDWhenAbsent — when no row carries a
-// group_id (or display_name), the renderer must NOT widen the table with
-// the optional columns. Plain mission listings stay narrow.
-func TestCtlMissionsListOmitsGroupIDWhenAbsent(t *testing.T) {
-	ac, stop := stubAppCtx(t, "s1", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"missions":[
-			{"mission_id":"01900000-0000-7000-8000-000000000001","status":"done","outcome":"success","lane":"normal","mission_name":"NamedMission","time_created":1700000000000}
-		]}`)
-	}))
-	defer stop()
-
-	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, io.Discard, "s1",
-		lettsclient.ListMissionsOpts{Kind: "mission"}, FormatText); err != nil {
-		t.Fatalf("runCtlMissionsList: %v", err)
-	}
-	s := out.String()
-	if strings.Contains(s, "GROUP_ID") {
-		t.Errorf("should NOT show GROUP_ID when no row has one: %q", s)
-	}
-	if strings.Contains(s, "DISPLAY_NAME") {
-		t.Errorf("should NOT show DISPLAY_NAME when no row has one: %q", s)
 	}
 }
 
@@ -263,7 +236,7 @@ func TestCtlMissionsOutputStreamsToStdout(t *testing.T) {
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
 
-	if err := runCtlMissionsOutput(cmd, ac, FormatText, readScopesMission, "mid", "s1", "stdout", false, nil); err != nil {
+	if err := runCtlMissionsOutput(cmd, ac, FormatText, "mid", "s1", "stdout", false, nil); err != nil {
 		t.Fatalf("runCtlMissionsOutput: %v", err)
 	}
 	if !strings.Contains(out.String(), "line one") || !strings.Contains(out.String(), "line two") {
@@ -614,81 +587,6 @@ func TestBulkDeleteDryRun(t *testing.T) {
 	}
 }
 
-// TestBulkSelectorListingPinsKindMission — the listing request both bulk
-// runners build from a --selector must carry kind=mission. Without the pin
-// the daemon returns exec rows too (shared id namespace), so a bulk restart
-// would re-execute ad-hoc exec commands and a bulk delete would wipe exec
-// history. There is deliberately no bulk surface for exec records — they are
-// managed individually via `ctl exec`.
-func TestBulkSelectorListingPinsKindMission(t *testing.T) {
-	runners := []struct {
-		name     string
-		bulkPath string
-		run      func(ac *appCtx, out, errOut *bytes.Buffer) error
-	}{
-		{"restart", "/v1/missions/bulk-restart", func(ac *appCtx, out, errOut *bytes.Buffer) error {
-			return runCtlMissionsBulkRestart(ac, out, errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, true /*yes*/)
-		}},
-		{"delete", "/v1/missions/bulk-delete", func(ac *appCtx, out, errOut *bytes.Buffer) error {
-			return runCtlMissionsBulkDelete(ac, out, errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, false, true /*yes*/)
-		}},
-	}
-	for _, r := range runners {
-		t.Run(r.name, func(t *testing.T) {
-			h, rec := bulkStubHandler(t, r.bulkPath,
-				`{"missions":[],"next_cursor":""}`, `{"results":[]}`)
-			ac, stop := stubAppCtx(t, "s1", h)
-			defer stop()
-
-			var out, errOut bytes.Buffer
-			if err := r.run(ac, &out, &errOut); err != nil {
-				t.Fatalf("bulk %s: %v", r.name, err)
-			}
-			if !strings.Contains(rec.listQuery, "kind=mission") {
-				t.Errorf("list query %q missing kind=mission", rec.listQuery)
-			}
-		})
-	}
-}
-
-// TestBulkDeleteSelectorSkipsExecRows — behavior-level proof against the
-// full stub daemon: with one named mission and one exec record both matching
-// the selector, bulk delete must touch only the mission. The exec row's
-// status stays intact because the kind=mission listing never returned its id.
-func TestBulkDeleteSelectorSkipsExecRows(t *testing.T) {
-	stub := newStubDugdale(t)
-	stub.SetMission(&stubMission{
-		MissionID: "named-1", Kind: "mission", Lane: "normal",
-		Status: "done", Outcome: "failed",
-	})
-	stub.SetMission(&stubMission{
-		MissionID: "exec-1", Kind: "exec", Lane: "normal",
-		Status: "done", Outcome: "failed",
-	})
-	ac := &appCtx{
-		Config: &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{
-			ID: "s1", Host: "ignored", AdminToken: "atok",
-		}}},
-		Getenv:       func(k string) (string, bool) { return "", false },
-		BaseURLForID: map[string]string{"s1": stub.URL()},
-		clients:      map[clientKey]*hostClient{},
-	}
-
-	var out, errOut bytes.Buffer
-	if err := runCtlMissionsBulkDelete(ac, &out, &errOut, strings.NewReader(""), FormatText, "s1", "outcome=failed", 0, false, false, true /*yes*/); err != nil {
-		t.Fatalf("runCtlMissionsBulkDelete: %v (stderr=%q)", err, errOut.String())
-	}
-	if got := stub.MissionRow("named-1"); got == nil || got.Status != "deleting" {
-		t.Errorf("named mission should be deleting, got %+v", got)
-	}
-	if got := stub.MissionRow("exec-1"); got == nil || got.Status != "done" {
-		t.Errorf("exec record must be untouched by bulk delete, got %+v", got)
-	}
-	if !strings.Contains(out.String(), "named-1") || strings.Contains(out.String(), "exec-1") {
-		t.Errorf("stdout should list only the named mission: %q", out.String())
-	}
-}
-
 // TestBulkDeleteAllFailedReturnsError — when every per-id result is a
 // failure the runner must not exit 0; the FAIL lines stay on stderr and the
 // aggregate error names the failure ratio and verb.
@@ -803,63 +701,6 @@ func TestParseSinceTime(t *testing.T) {
 	}
 }
 
-// TestCtlMissionsListDefaultKindMission verifies that opts.Kind="mission" lands
-// as `kind=mission` in the upstream GET /v1/missions query string. Mirrors the
-// default the cobra binding installs so default invocations stay scoped to
-// missions and don't leak exec rows into the listing.
-func TestCtlMissionsListDefaultKindMission(t *testing.T) {
-	var gotQuery string
-	ac, stop := stubAppCtx(t, "s1", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"missions":[],"next_cursor":""}`)
-	}))
-	defer stop()
-
-	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", lettsclient.ListMissionsOpts{Kind: "mission"}, FormatText); err != nil {
-		t.Fatalf("runCtlMissionsList: %v", err)
-	}
-	if !strings.Contains(gotQuery, "kind=mission") {
-		t.Errorf("query=%q, want kind=mission default", gotQuery)
-	}
-}
-
-// TestCtlMissionsListKindAllOmits verifies that an empty opts.Kind (which the
-// command-builder uses to encode `--kind=all`) leaves no `kind=` segment in
-// the query — letting the daemon list both missions and exec rows.
-func TestCtlMissionsListKindAllOmits(t *testing.T) {
-	var gotQuery string
-	ac, stop := stubAppCtx(t, "s1", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.RawQuery
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"missions":[],"next_cursor":""}`)
-	}))
-	defer stop()
-
-	var out bytes.Buffer
-	if err := runCtlMissionsList(ac, &out, io.Discard, "s1", lettsclient.ListMissionsOpts{}, FormatText); err != nil {
-		t.Fatalf("runCtlMissionsList: %v", err)
-	}
-	if strings.Contains(gotQuery, "kind=") {
-		t.Errorf("query=%q, should omit kind for 'all' mode", gotQuery)
-	}
-}
-
-// TestCtlMissionsListKindUnknownRejected drives the command through cobra so
-// the --kind validation gate actually fires; unknown values must surface as
-// BadUsageError (exit 2) before any HTTP call or config load happens.
-func TestCtlMissionsListKindUnknownRejected(t *testing.T) {
-	cmd := newCtlMissionsListCmd()
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--host", "s1", "--kind", "garbage"})
-	err := cmd.Execute()
-	if mapErrorToExit(err) != 2 {
-		t.Errorf("exit=%d, want 2 (badusage), err=%v", mapErrorToExit(err), err)
-	}
-}
-
 func TestCtlMissionsSingleDryRunDoesNotAct(t *testing.T) {
 	mid := "01900000-0000-7000-8000-000000000001"
 	for _, verb := range []string{"restart", "delete"} {
@@ -867,7 +708,7 @@ func TestCtlMissionsSingleDryRunDoesNotAct(t *testing.T) {
 		mux := http.NewServeMux()
 		mux.HandleFunc("GET /v1/missions/{id}", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(w, `{"mission_id":"`+mid+`","status":"running","kind":"mission"}`)
+			_, _ = io.WriteString(w, `{"mission_id":"`+mid+`","status":"running"}`)
 		})
 		mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 			mutations++

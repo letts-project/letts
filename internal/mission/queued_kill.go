@@ -133,5 +133,5 @@ func KillQueued(ctx context.Context, dataDir string, db *sql.DB, m *storage.Miss
 	// shared, proven commitFinalize tail (outputs=[] fast path). No TTL recalc
 	// runs because there are no outputs, so an empty FinalizeConfig.TTL is fine.
 	return commitFinalize(ctx, db, ew, &intent, nil,
-		FinalizeConfig{DataDir: dataDir}, string(m.Kind), m.Lane, 0)
+		FinalizeConfig{DataDir: dataDir}, m.Lane, 0)
 }

@@ -13,11 +13,8 @@ import (
 // since the daemon omits absent keys.
 type Mission struct {
 	MissionID        string          `json:"mission_id"`
-	Kind             string          `json:"kind,omitempty"`
 	Lane             string          `json:"lane,omitempty"`
 	MissionName      string          `json:"mission_name,omitempty"`
-	DisplayName      string          `json:"display_name,omitempty"`
-	GroupID          string          `json:"group_id,omitempty"`
 	Status           string          `json:"status"`
 	Outcome          string          `json:"outcome,omitempty"`
 	ExitCode         *int            `json:"exit_code,omitempty"`
@@ -69,8 +66,6 @@ type ListMissionsOpts struct {
 	Lane          string
 	Mission       string // substring match on mission name
 	MissionPrefix string // anchored prefix match on mission name
-	Kind          string
-	GroupID       string // exec group filter
 	RestartedFrom string // missions restarted from this mission id
 	Order         string // "" / "created" (default) | "finished"
 	SinceMs       int64
@@ -102,12 +97,6 @@ func (o ListMissionsOpts) toQuery() string {
 	}
 	if o.MissionPrefix != "" {
 		q.Set("mission_prefix", o.MissionPrefix)
-	}
-	if o.Kind != "" {
-		q.Set("kind", o.Kind)
-	}
-	if o.GroupID != "" {
-		q.Set("group_id", o.GroupID)
 	}
 	if o.RestartedFrom != "" {
 		q.Set("restarted_from", o.RestartedFrom)

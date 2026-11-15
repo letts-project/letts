@@ -30,8 +30,8 @@ const (
 	defaultShutdownGrace  = 15 * time.Second
 )
 
-// findBinaries locates the project root and ensures `dugdale` and `letts`
-// binaries are built. Returns absolute paths. Called once per test run.
+// buildBinaries locates the project root and builds the `dugdale` binary
+// once per test run, returning the directory that holds it.
 var (
 	binOnce sync.Once
 	binDir  string
@@ -51,7 +51,7 @@ func buildBinaries(t *testing.T) string {
 			binErr = err
 			return
 		}
-		for _, target := range []string{"dugdale", "letts"} {
+		for _, target := range []string{"dugdale"} {
 			out := filepath.Join(dir, target)
 			cmd := exec.Command("go", "build", "-o", out, "./cmd/"+target)
 			cmd.Dir = repo
@@ -108,12 +108,8 @@ type daemon struct {
 	dataDir      string
 	configPath   string
 	URL          string
-	Port         int
-	DispatchTok  string
 	AdminTok     string
-	ExecTok      string
 	logBuf       *threadSafeBuffer
-	lettsBin     string
 	dugdaleBin   string
 	stopOnce     sync.Once
 	exitCode     int
@@ -142,8 +138,6 @@ func (b *threadSafeBuffer) String() string {
 type daemonOpts struct {
 	DispatchToken string
 	AdminToken    string
-	ExecToken     string
-	ExecEnabled   bool
 	SuccessTTL    string // e.g. "72h"; empty → 24h default
 	FailedTTL     string
 	StagingTTL    string
@@ -175,15 +169,6 @@ func startDaemon(t *testing.T, opts daemonOpts) *daemon {
 		opts.StagingTTL = "1h"
 	}
 
-	var execBlock string
-	if opts.ExecEnabled {
-		execBlock = fmt.Sprintf(`exec:
-  enabled: true
-  tokens: ["%s"]
-  allow_shell: true
-`, opts.ExecToken)
-	}
-
 	cfgYAML := fmt.Sprintf(`listen: 127.0.0.1:%d
 data_dir: %s
 auth:
@@ -203,7 +188,6 @@ cleanup:
   sweep_interval: 1s
 limits:
   max_dispatch_body_size: 1MiB
-  max_exec_body_size: 1MiB
   max_apply_body_size: 1MiB
   max_mission_input_size: 256KiB
   max_output_buffer: 4MiB
@@ -214,7 +198,7 @@ limits:
   max_fail_details_size: 64KiB
   default_kill_grace: 1s
   reader_post_exit_grace: 500ms
-%s%s`, port, dataDir, opts.DispatchToken, opts.AdminToken, opts.SuccessTTL, opts.FailedTTL, opts.StagingTTL, execBlock, opts.ExtraYAML)
+%s`, port, dataDir, opts.DispatchToken, opts.AdminToken, opts.SuccessTTL, opts.FailedTTL, opts.StagingTTL, opts.ExtraYAML)
 
 	cfgPath := filepath.Join(dataDir, "dugdale.yaml")
 	if err := os.WriteFile(cfgPath, []byte(cfgYAML), 0o600); err != nil {
@@ -222,7 +206,6 @@ limits:
 	}
 
 	dugBin := filepath.Join(dir, "dugdale")
-	lettsBin := filepath.Join(dir, "letts")
 	logBuf := &threadSafeBuffer{}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -241,12 +224,8 @@ limits:
 		dataDir:      dataDir,
 		configPath:   cfgPath,
 		URL:          fmt.Sprintf("http://127.0.0.1:%d", port),
-		Port:         port,
-		DispatchTok:  opts.DispatchToken,
 		AdminTok:     opts.AdminToken,
-		ExecTok:      opts.ExecToken,
 		logBuf:       logBuf,
-		lettsBin:     lettsBin,
 		dugdaleBin:   dugBin,
 		exitObserved: make(chan struct{}),
 	}
@@ -388,90 +367,4 @@ func (d *daemon) AssertLogContains(t *testing.T, s string) {
 	if !strings.Contains(d.Logs(), s) {
 		t.Errorf("expected log to contain %q\nlogs:\n%s", s, d.Logs())
 	}
-}
-
-// RunLetts executes the letts CLI binary with args, returning stdout+stderr+exit.
-// envOverride is appended to os.Environ.
-func (d *daemon) RunLetts(t *testing.T, args []string, envOverride []string) (stdout, stderr string, exitCode int) {
-	t.Helper()
-	cmd := exec.Command(d.lettsBin, args...)
-	cmd.Env = append(os.Environ(), envOverride...)
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-	err := cmd.Run()
-	if ee, ok := err.(*exec.ExitError); ok {
-		exitCode = ee.ExitCode()
-	}
-	return outBuf.String(), errBuf.String(), exitCode
-}
-
-// lettsYAMLOpts is the input for WriteLettsYAML.
-type lettsYAMLOpts struct {
-	DugdaleID string            // required
-	Lane      string            // required: applied lane name
-	Aliases   map[string]string // optional: alias key → value (id or ${VAR})
-	Routes    map[string]struct {
-		Host string
-		Lane string
-	}
-	ExtraEnv map[string]string // optional env exported to letts process via RunLetts envOverride
-}
-
-// WriteLettsYAML writes a letts.yaml for the running daemon and returns the
-// config path plus an envOverride slice that RunLetts can pass. Tokens come
-// from the daemon's own opts so /v1/dispatch and /v1/admin/apply auth match.
-func (d *daemon) WriteLettsYAML(t *testing.T, opts lettsYAMLOpts) (configPath string, env []string) {
-	t.Helper()
-	if opts.DugdaleID == "" {
-		t.Fatal("WriteLettsYAML: DugdaleID required")
-	}
-	if opts.Lane == "" {
-		t.Fatal("WriteLettsYAML: Lane required")
-	}
-	var aliasBlock strings.Builder
-	if len(opts.Aliases) > 0 {
-		aliasBlock.WriteString("aliases:\n")
-		for k, v := range opts.Aliases {
-			fmt.Fprintf(&aliasBlock, "  %s: %q\n", k, v)
-		}
-	}
-	var routesBlock strings.Builder
-	if len(opts.Routes) > 0 {
-		routesBlock.WriteString("routes:\n")
-		for k, r := range opts.Routes {
-			fmt.Fprintf(&routesBlock, "  %s: {host: %s, lane: %s}\n", k, r.Host, r.Lane)
-		}
-	}
-
-	authExec := ""
-	if d.ExecTok != "" {
-		authExec = fmt.Sprintf("  exec_token: %q\n", d.ExecTok)
-	}
-
-	yaml := fmt.Sprintf(`auth:
-  token: %q
-  admin_token: %q
-%sdugdales:
-  - id: %s
-    host: 127.0.0.1
-    port: %d
-    mission_dir: /tmp
-    lanes:
-      %s: {concurrency: 1}
-%s%s`,
-		d.DispatchTok, d.AdminTok, authExec,
-		opts.DugdaleID, d.Port, opts.Lane,
-		aliasBlock.String(), routesBlock.String(),
-	)
-
-	configPath = filepath.Join(d.dataDir, "letts.yaml")
-	if err := os.WriteFile(configPath, []byte(yaml), 0o600); err != nil {
-		t.Fatalf("write letts.yaml: %v", err)
-	}
-	env = []string{"LETTS_CONFIG=" + configPath}
-	for k, v := range opts.ExtraEnv {
-		env = append(env, k+"="+v)
-	}
-	return configPath, env
 }

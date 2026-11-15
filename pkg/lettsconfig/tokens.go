@@ -8,7 +8,6 @@ type Scope int
 const (
 	ScopeDispatch Scope = iota
 	ScopeAdmin
-	ScopeExec
 )
 
 func (s Scope) String() string {
@@ -17,8 +16,6 @@ func (s Scope) String() string {
 		return "dispatch"
 	case ScopeAdmin:
 		return "admin"
-	case ScopeExec:
-		return "exec"
 	default:
 		return "unknown"
 	}
@@ -49,12 +46,6 @@ func ResolveToken(c *Config, dugdaleID string, scope Scope, getenv EnvLookup) (s
 			raw = d.AdminToken
 		} else {
 			raw = c.Auth.AdminToken
-		}
-	case ScopeExec:
-		if d.ExecToken != "" {
-			raw = d.ExecToken
-		} else {
-			raw = c.Auth.ExecToken
 		}
 	default:
 		return "", fmt.Errorf("unknown scope %d", scope)

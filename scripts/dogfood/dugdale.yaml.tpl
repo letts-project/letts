@@ -14,12 +14,6 @@ admin:
   tokens:
     - dogfood-admin
 
-exec:
-  enabled: true
-  allow_shell: false
-  tokens:
-    - dogfood-exec
-
 cleanup:
   success_ttl: 1h
   failed_ttl: 24h

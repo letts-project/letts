@@ -1,7 +1,6 @@
 package lettsclient
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -290,25 +289,4 @@ func ListStaging(c *Client, opts ListStagingOpts) (*ListStagingResponse, error) 
 		return nil, err
 	}
 	return &out, nil
-}
-
-// StagingByContent looks up a staging artifact by sha256 and size on this
-// dugdale. Returns (stagingID, true, nil) on 200, ("", false, nil) on 404,
-// error otherwise. The size parameter is REQUIRED by the daemon.
-func StagingByContent(c *Client, sha256hex string, size int64) (string, bool, error) {
-	q := url.Values{}
-	q.Set("size", strconv.FormatInt(size, 10))
-	rel := "/v1/staging/by-content/" + sha256hex + "?" + q.Encode()
-	var out struct {
-		StagingID string `json:"staging_id"`
-	}
-	err := c.DoJSON("GET", rel, nil, nil, &out)
-	if err == nil {
-		return out.StagingID, true, nil
-	}
-	var he *HTTPError
-	if errors.As(err, &he) && he.Status == http.StatusNotFound {
-		return "", false, nil
-	}
-	return "", false, err
 }

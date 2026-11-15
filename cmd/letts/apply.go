@@ -48,11 +48,11 @@ func newApplyCmd() *cobra.Command {
 			if err := lettsconfig.Validate(merged); err != nil {
 				return NewConfigError(err.Error())
 			}
-			// Warn (don't fail) on plain-text tokens — but
-			// only for PRIVILEGED scopes (admin/exec). The dispatch token is
-			// widely distributed (app code, every app server), so plain text in
-			// letts.yaml is expected and not worth a nag. Dispatch-scope
-			// locations end in ".token"; admin/exec end in "_token".
+			// Warn (don't fail) on plain-text tokens — but only for the
+			// privileged admin scope. The dispatch token is widely distributed
+			// (app code, every app server), so plain text in letts.yaml is
+			// expected and not worth a nag. Dispatch-scope locations end in
+			// ".token"; admin ones end in "_token".
 			var plainPriv []string
 			for _, loc := range lettsconfig.PlainTokenLocations(merged) {
 				if !strings.HasSuffix(loc, ".token") {

@@ -54,11 +54,7 @@ func newCtlStagingUploadCmd() *cobra.Command {
 // pipelines can grab any of the three with `cut` (a record in json, yaml and
 // ndjson).
 func runCtlStagingUpload(ac *appCtx, w io.Writer, f Format, host, path string) error {
-	// PUT/HEAD /v1/staging is dispatch/exec/admin (admin
-	// is a superset). Pick the first scope the operator has a token
-	// for so dispatch/exec-only users can upload.
-	c, err := clientForFirstAvailableScope(ac, host,
-		[]lettsconfig.Scope{lettsconfig.ScopeDispatch, lettsconfig.ScopeExec, lettsconfig.ScopeAdmin})
+	c, err := clientForFirstAvailableScope(ac, host, dispatchOrAdmin)
 	if err != nil {
 		return err
 	}
@@ -108,9 +104,7 @@ func newCtlStagingDownloadCmd() *cobra.Command {
 // runCtlStagingDownload GETs /v1/staging/{id} and io.Copy's the body either
 // to w (when outPath is empty or "-") or to a freshly created file.
 func runCtlStagingDownload(ac *appCtx, w io.Writer, host, id, outPath string) error {
-	// GET /v1/staging/{id} is dispatch/exec/admin.
-	c, err := clientForFirstAvailableScope(ac, host,
-		[]lettsconfig.Scope{lettsconfig.ScopeDispatch, lettsconfig.ScopeExec, lettsconfig.ScopeAdmin})
+	c, err := clientForFirstAvailableScope(ac, host, dispatchOrAdmin)
 	if err != nil {
 		return err
 	}
@@ -199,7 +193,7 @@ func newCtlStagingListCmd() *cobra.Command {
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (required)")
 	c.Flags().StringVar(&missionID, "mission-id", "", "mission whose artifacts to list (required)")
-	c.Flags().StringVar(&refKind, "ref-kind", "", "filter by ref kind (input|output|script)")
+	c.Flags().StringVar(&refKind, "ref-kind", "", "filter by ref kind (input|output)")
 	c.Flags().IntVar(&limit, "limit", 0, "max rows (default daemon-side)")
 	c.Flags().StringVar(&cursor, "cursor", "", "pagination cursor from a previous next_cursor")
 	return c

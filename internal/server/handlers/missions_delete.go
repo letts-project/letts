@@ -41,15 +41,8 @@ func (h *LifecycleHandler) deleteOne(ctx context.Context, id string, force bool)
 	if err != nil {
 		return dbErrorOutcome("missions.delete", err)
 	}
-	// Kind-vs-scope gate. Runs after 404 and the deleting
-	// short-circuit (below) so existence/pseudo-non-existence stays
-	// uncorrelated with caller scope. Safe today (admin-only routes)
-	// but defends future per-scope wiring of bulk-delete.
 	if m.Status == storage.StatusDeleting {
 		return opOutcome{Status: http.StatusAccepted, StatusName: "deletion_pending"}
-	}
-	if gate := gateKindForMission(ctx, m); gate.Status != 0 {
-		return gate
 	}
 	switch m.Status {
 	case storage.StatusQueued, storage.StatusDone:

@@ -15,7 +15,7 @@ func TestInsertRefAndGetByMission(t *testing.T) {
 	sID := ids.NewUUIDv7()
 
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: mID, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: mID, Lane: "x", MissionName: "m",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 1,
 	})
@@ -49,7 +49,7 @@ func TestRefsByStaging(t *testing.T) {
 
 	for _, mID := range []string{mID1, mID2} {
 		_ = InsertMission(context.Background(), db, &Mission{
-			ID: mID, Kind: KindMission, Lane: "x", MissionName: "m",
+			ID: mID, Lane: "x", MissionName: "m",
 			Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 			TimeCreatedMs: 1,
 		})
@@ -60,7 +60,7 @@ func TestRefsByStaging(t *testing.T) {
 	})
 
 	_ = InsertRef(context.Background(), db, StagingRef{MissionID: mID1, StagingID: sID, RefKind: RefInput, Role: ""})
-	_ = InsertRef(context.Background(), db, StagingRef{MissionID: mID2, StagingID: sID, RefKind: RefScript, Role: ""})
+	_ = InsertRef(context.Background(), db, StagingRef{MissionID: mID2, StagingID: sID, RefKind: RefOutput, Role: "result"})
 
 	refs, err := RefsByStaging(context.Background(), db, sID)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestRefUniqueRoleConstraint(t *testing.T) {
 	sID2 := ids.NewUUIDv7()
 
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: mID, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: mID, Lane: "x", MissionName: "m",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 1,
 	})
@@ -103,7 +103,7 @@ func TestRecalcStagingTTLRunningMission(t *testing.T) {
 	sID := ids.NewUUIDv7()
 
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: mID, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: mID, Lane: "x", MissionName: "m",
 		Status: StatusRunning, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 1000,
 	})
@@ -116,8 +116,6 @@ func TestRecalcStagingTTLRunningMission(t *testing.T) {
 	policy := TTLPolicy{
 		MissionSuccess: 24 * time.Hour,
 		MissionFailed:  1 * time.Hour,
-		ExecSuccess:    12 * time.Hour,
-		ExecFailed:     30 * time.Minute,
 		StagingTTL:     1 * time.Hour,
 		DownloadGrace:  15 * time.Minute,
 	}
@@ -138,7 +136,7 @@ func TestRecalcStagingTTLDoneMission(t *testing.T) {
 
 	finishedMs := int64(5000)
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: mID, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: mID, Lane: "x", MissionName: "m",
 		Status: StatusDone, Outcome: sql.NullString{String: "success", Valid: true},
 		Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs:  1000,
@@ -154,8 +152,6 @@ func TestRecalcStagingTTLDoneMission(t *testing.T) {
 	policy := TTLPolicy{
 		MissionSuccess: successTTL,
 		MissionFailed:  1 * time.Hour,
-		ExecSuccess:    12 * time.Hour,
-		ExecFailed:     30 * time.Minute,
 		StagingTTL:     1 * time.Hour,
 		DownloadGrace:  15 * time.Minute,
 	}
@@ -182,8 +178,6 @@ func TestRecalcStagingTTLNoRefs(t *testing.T) {
 	policy := TTLPolicy{
 		MissionSuccess: 24 * time.Hour,
 		MissionFailed:  1 * time.Hour,
-		ExecSuccess:    12 * time.Hour,
-		ExecFailed:     30 * time.Minute,
 		StagingTTL:     stagingTTL,
 		DownloadGrace:  15 * time.Minute,
 	}
@@ -203,7 +197,7 @@ func TestTriggerSetsTimeExpiresZeroOnRefDelete(t *testing.T) {
 	sID := ids.NewUUIDv7()
 
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: mID, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: mID, Lane: "x", MissionName: "m",
 		Status: StatusDone, Outcome: sql.NullString{String: "success", Valid: true},
 		Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 1,

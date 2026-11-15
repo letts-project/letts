@@ -25,7 +25,6 @@ func envSliceToMap(env []string) map[string]string {
 func TestBuildEnvBase(t *testing.T) {
 	env, err := BuildEnv("/home/dugdale", config.MissionEnvConfig{}, nil, BaseVars{
 		MissionID: "mission-123",
-		Kind:      "mission",
 		Lane:      "normal",
 		Workdir:   "/data/work/mission-123",
 	}, func(string) (string, bool) { return "", false })
@@ -40,7 +39,6 @@ func TestBuildEnvBase(t *testing.T) {
 		"HOME":             "/home/dugdale",
 		"TZ":               "UTC",
 		"LETTS_MISSION_ID": "mission-123",
-		"LETTS_KIND":       "mission",
 		"LETTS_LANE":       "normal",
 		"LETTS_WORKDIR":    "/data/work/mission-123",
 		"LETTS_TMPDIR":     "/data/work/mission-123/tmp",
@@ -72,7 +70,6 @@ func TestBuildEnvInherit(t *testing.T) {
 
 	env, err := BuildEnv("/home/dugdale", cfg, nil, BaseVars{
 		MissionID: "m1",
-		Kind:      "mission",
 		Lane:      "normal",
 		Workdir:   "/data/work/m1",
 	}, lookup)
@@ -103,7 +100,6 @@ func TestBuildEnvInheritSkipsLETTS(t *testing.T) {
 
 	env, err := BuildEnv("/home/dugdale", cfg, nil, BaseVars{
 		MissionID: "m2",
-		Kind:      "mission",
 		Lane:      "normal",
 		Workdir:   "/data/work/m2",
 	}, lookup)
@@ -142,7 +138,6 @@ func TestBuildEnvSet(t *testing.T) {
 
 	env, err := BuildEnv("/home/dugdale", cfg, nil, BaseVars{
 		MissionID: "m3",
-		Kind:      "mission",
 		Lane:      "normal",
 		Workdir:   "/data/work/m3",
 	}, lookup)
@@ -168,7 +163,6 @@ func TestBuildEnvSetLETTSRejected(t *testing.T) {
 
 	_, err := BuildEnv("/home/dugdale", cfg, nil, BaseVars{
 		MissionID: "m4",
-		Kind:      "mission",
 		Lane:      "normal",
 		Workdir:   "/data/work/m4",
 	}, func(string) (string, bool) { return "", false })
@@ -193,7 +187,6 @@ func TestBuildEnvInputs(t *testing.T) {
 
 	env, err := BuildEnv("/home/dugdale", config.MissionEnvConfig{}, inputs, BaseVars{
 		MissionID: "m5",
-		Kind:      "mission",
 		Lane:      "normal",
 		Workdir:   "/data/work/m5",
 	}, func(string) (string, bool) { return "", false })

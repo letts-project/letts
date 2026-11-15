@@ -41,9 +41,6 @@ func configHasSecrets(c *DugdaleConfig) bool {
 	if len(c.Admin.Tokens) > 0 {
 		return true
 	}
-	if len(c.Exec.Tokens) > 0 {
-		return true
-	}
 	if len(c.MissionEnv.Set) > 0 {
 		return true
 	}

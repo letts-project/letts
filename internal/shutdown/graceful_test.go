@@ -41,7 +41,7 @@ func insertRunningMission(t *testing.T, db *sql.DB, killer *fakeKiller, lane str
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: lane,
+		ID: id, Lane: lane,
 		MissionName: "ShutdownFixture", Status: storage.StatusRunning,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: time.Now().UnixMilli(),
@@ -383,7 +383,7 @@ func TestCoordinatorPausesLanes(t *testing.T) {
 	// Put a queued mission in alpha; if the lane is paused, it should remain queued.
 	id := ids.NewUUIDv7()
 	_ = storage.InsertMission(context.Background(), db, &storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: "alpha",
+		ID: id, Lane: "alpha",
 		MissionName: "x", Status: storage.StatusQueued,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: time.Now().UnixMilli(),

@@ -2,12 +2,12 @@
 
 # letts
 
-**letts** is a durable, self-hosted task queue and remote-execution system. It is the
-successor to *jobd*. A long-running daemon called **dugdale** holds per-lane work
-queues, runs jobs as ordinary operating-system processes, captures their structured
-output, and exposes everything over a small HTTP API. A single command-line client
-called **letts** talks to one or many dugdale instances to apply configuration,
-dispatch work, follow it to completion, and inspect the results.
+**letts** is a durable, self-hosted task queue. It is the successor to *jobd*. A
+long-running daemon called **dugdale** holds per-lane work queues, runs jobs as ordinary
+operating-system processes, captures their structured output, and exposes everything over
+a small HTTP API. A single command-line client called **letts** talks to one or many
+dugdale instances to apply configuration, dispatch work, follow it to completion, and
+inspect the results.
 
 The whole system is two statically-linked Go binaries with no runtime dependencies.
 All daemon state lives in a single SQLite database plus a directory of append-only
@@ -19,7 +19,7 @@ without losing or corrupting a job.
    │  letts CLI │────────────────────────────────────────────────┐
    │ lettsclient│                                                │
    └─────┬──────┘                                                │
-         │  HTTP/1.1 + Bearer tokens (dispatch / exec / admin)   │
+         │  HTTP/1.1 and Bearer tokens (dispatch / admin)        │
          ▼                                                       ▼
    ┌─────────────────────────── dugdale daemon ────────────────────────────┐
    │  HTTP API ─► lane runners ─► spawn process ─► fd3 events + stdout/err │
@@ -43,7 +43,6 @@ without losing or corrupting a job.
 - [The dugdale daemon](#the-dugdale-daemon)
 - [The letts CLI](#the-letts-cli)
 - [Writing a mission](#writing-a-mission)
-- [Remote exec](#remote-exec)
 - [How it works: core mechanics and durability](#how-it-works-core-mechanics-and-durability)
 - [HTTP API reference](#http-api-reference)
 - [Observability](#observability)
@@ -62,33 +61,22 @@ rest of the documentation much easier to follow.
   lanes, and an HTTP listener. A single physical host can run several dugdale instances
   side by side, each with its own data directory and configuration file.
 
-- **mission** — the primary unit of work. A mission is a *configured* script: the
+- **mission** — the unit of work. A mission is a script registered in advance: the
   operator registers a mission directory and a command template through `letts apply`,
   and then dispatches a mission by name with a JSON input payload. The daemon resolves
   the name to a script, runs it, and records the result.
 
-- **exec** — an *ad-hoc* command. Where a mission runs a pre-registered script, an exec
-  runs an arbitrary argv (or an uploaded script) that the caller supplies at dispatch
-  time. Exec is a remote-code-execution feature and is therefore disabled by default;
-  it must be explicitly turned on in the daemon configuration.
+- **lane** — a named queue with a concurrency limit. Every mission is dispatched into a
+  lane. The lane's concurrency limit caps how many of its missions run at once; the rest
+  wait in `queued` order. Lanes can be paused and resumed independently.
 
-- **lane** — a named queue with a concurrency limit. Every mission and every exec is
-  dispatched into a lane. The lane's concurrency limit caps how many of its jobs run at
-  once; the rest wait in `queued` order. Lanes can be paused and resumed independently.
+- **staging** — a file store inside the daemon. Mission input files are uploaded to
+  staging before dispatch, and outputs are committed back into staging when a mission
+  succeeds. Uploads are resumable and verified against their content hash.
 
-- **kind** — every job row is either `kind=mission` or `kind=exec`. Kinds are isolated
-  from one another at the authorization layer: a dispatch token can only see missions,
-  an exec token can only see execs, and only an admin token sees both.
-
-- **staging** — a content-addressed file store inside the daemon. Mission and exec
-  inputs (files, scripts, stdin) are uploaded to staging before dispatch, and outputs
-  are committed back into staging when a job succeeds. Uploads are resumable and
-  de-duplicated by content hash.
-
-- **scope / token** — the daemon recognizes three Bearer-token scopes: **dispatch**
-  (submit and read missions), **exec** (submit and read execs), and **admin**
-  (everything, including configuration, lifecycle control, and listing). Admin is a
-  superset of the other two.
+- **scope / token** — the daemon recognizes two Bearer-token scopes: **dispatch**
+  (submit and read missions) and **admin** (everything, including configuration,
+  lifecycle control, and listing). Admin is a superset of dispatch.
 
 - **the two configuration files** — these are easy to confuse, so it is worth stating
   plainly: `dugdale.yaml` configures the *daemon* (listen address, data directory,
@@ -146,8 +134,8 @@ following layout inside it:
 | `state.db` (+ `-wal`, `-shm`) | The SQLite database: missions, staging files, refs, runtime snapshots, finalize intents, applied config. Opened in WAL mode with a single serialized writer. |
 | `dugdale.lock` | An advisory `flock` guaranteeing only one daemon process uses this data directory at a time. |
 | `output/` | Per-mission append-only artifacts: the NDJSON `…-events` file and the `…-stdout` / `…-stderr` / `…-combined` capture files. Two-level sharded by the first four hex characters of the mission id. |
-| `staging/` | Completed and in-progress staging files (mission/exec inputs, scripts, committed outputs). Sharded the same way. |
-| `work/` | Per-job scratch directories. A mission's `$LETTS_WORKDIR` and an exec's materialized inputs/outputs live here for the duration of the run. |
+| `staging/` | Completed and in-progress staging files (mission inputs and committed outputs). Sharded the same way. |
+| `work/` | Per-mission scratch directories (`$LETTS_WORKDIR`). A mission's directory stays until the mission itself is removed by retention cleanup or deletion. |
 | `tombstone/` | Staging files that have been garbage-collected are renamed here first and unlinked after a short grace period, so downloads already in flight keep working. |
 
 State is persisted with SQLite via the pure-Go `modernc.org/sqlite` driver, so the
@@ -334,9 +322,6 @@ cleanup:
   failed_ttl:     7d
   staging_ttl:    1h
   sweep_interval: 5m
-
-exec:
-  enabled: false # opt-in remote execution; leave off unless required
 ```
 
 #### Full field reference
@@ -358,17 +343,17 @@ behind a TLS-terminating proxy.
 | `network.trusted_proxies` | []string | `[]` | CIDRs of trusted proxies, for `X-Forwarded-For` parsing (single hosts as `/32` or `/128`; bare IPs are rejected). Invalid entries are logged and dropped rather than failing startup. |
 | `network.use_x_forwarded_for` | bool | `false` | Honor `X-Forwarded-For` when computing the client IP for brute-force tracking. |
 
-If `listen` is non-loopback **and** any token scope is configured (`auth.tokens`,
-`admin.tokens`, or — only when `exec.enabled: true` — `exec.tokens`), the daemon refuses to
-start unless `behind_tls_proxy` or `insecure_plain_http` is set — a guard against
-accidentally exposing bearer tokens over plain HTTP.
+If `listen` is non-loopback **and** any token scope is configured (`auth.tokens` or
+`admin.tokens`), the daemon refuses to start unless `behind_tls_proxy` or
+`insecure_plain_http` is set — a guard against accidentally exposing bearer tokens over
+plain HTTP.
 
 **`auth` / `admin`** — bearer-token lists. Membership in a list grants that scope.
 
 | Key | Type | Default | Meaning |
 |-----|------|---------|---------|
 | `auth.tokens` | []string | `[]` | Dispatch-scope tokens (submit/read missions). |
-| `admin.tokens` | []string | `[]` | Admin-scope tokens (everything; superset of dispatch and exec). |
+| `admin.tokens` | []string | `[]` | Admin-scope tokens (everything; superset of dispatch). |
 
 Admin access is over TCP with admin-scope bearer tokens — the daemon binds a TCP
 listener only, with no Unix socket.
@@ -406,7 +391,6 @@ suffix (1024-based). For several fields a value of `0` means *no cap*.
 | `max_fail_details_size` | `256KiB` | Maximum size of a failure details object. |
 | `max_dispatch_body_size` | `2MiB` | Body cap for `POST /v1/dispatch`. |
 | `max_mission_input_size` | `1MiB` | Cap on a mission's canonical input JSON. |
-| `max_exec_body_size` | `1MiB` | Body cap for `POST /v1/exec/dispatch`. |
 | `max_apply_body_size` | `1MiB` | Body cap for apply / kill / bulk endpoints. |
 | `progress_buffer_size` | `256KiB` | Cap on buffered progress event bodies. |
 | `max_output_file_size` | `0` (unlimited) | Per-output-file size cap. |
@@ -452,32 +436,18 @@ and never changes the classification. Large data belongs in output files, not in
 | `mission_env.set` | map[string]string | `{}` | Literal environment variables set on missions (treated as a secret). |
 
 No inherited name and no `set` key may begin with `LETTS_`, which is reserved for the
-variables the daemon injects (`LETTS_MISSION_ID`, `LETTS_KIND`, `LETTS_LANE`,
-`LETTS_WORKDIR`, `LETTS_TMPDIR`, `LETTS_IN_<role>`, and so on).
+variables the daemon injects (`LETTS_MISSION_ID`, `LETTS_LANE`, `LETTS_WORKDIR`,
+`LETTS_TMPDIR`, `LETTS_IN_<role>`, and so on).
 
-**`exec`** — the opt-in remote-execution feature.
-
-| Key | Type | Default | Meaning |
-|-----|------|---------|---------|
-| `exec.enabled` | bool | `false` | Master switch. When off, `POST /v1/exec/dispatch` returns `404 feature_disabled` before authentication, so the surface is indistinguishable from a build without exec. |
-| `exec.tokens` | []string | `[]` | Exec-scope bearer tokens (a secret). |
-| `exec.allow_shell` | bool | `false` | Permit shell-form argv. |
-| `exec.max_script_size` | bytes | `256KiB` | Maximum uploaded-script size. |
-| `exec.max_inputs_per_exec` | int | `32` | Maximum staged inputs per exec (`0` = no cap). |
-| `exec.max_outputs_per_exec` | int | `32` | Maximum declared outputs per exec (`0` = no cap). |
-| `exec.exec_success_ttl` | duration | `1h` | Retain succeeded execs this long. |
-| `exec.exec_failed_ttl` | duration | `24h` | Retain failed execs this long. |
-
-When `exec.enabled` is true, the daemon refuses to start unless at least one of
-`exec.tokens` or `admin.tokens` is non-empty — otherwise every exec request would simply
-return `401`.
+For compatibility with older configuration files, a leftover `exec:` section is accepted
+and ignored unless it sets `enabled: true`, in which case the daemon refuses to start.
 
 #### File permissions, discovery, and flags
 
 - **Secret-file permissions.** If the configuration contains any secret — `auth.tokens`,
-  `admin.tokens`, `exec.tokens`, or `mission_env.set` — the file must be mode `0600` or
-  `0400` and owned by the daemon's user, or startup fails. Use
-  `--insecure-config-permissions` to bypass this in development.
+  `admin.tokens`, or `mission_env.set` — the file must be mode `0600` or `0400` and owned
+  by the daemon's user, or startup fails. Use `--insecure-config-permissions` to bypass
+  this in development.
 - **Discovery order.** The config path is resolved from the `--config` flag, then the
   `DUGDALE_CONFIG` environment variable, then `./dugdale.yaml`, then
   `/etc/letts/dugdale/default.yaml`. Additional named instances are pointed at their own
@@ -500,7 +470,6 @@ A representative `letts.yaml`:
 auth:                                  # global token fallbacks (per-dugdale values win)
   token:       ${LETTS_DISPATCH_TOKEN} # dispatch scope
   admin_token: ${LETTS_ADMIN_TOKEN}    # admin scope
-  exec_token:  ${LETTS_EXEC_TOKEN}     # exec scope
 
 defaults:
   port: 7180
@@ -539,8 +508,8 @@ selector:
 
 #### Sections
 
-- **`auth`** — global fallback tokens for the three scopes (`token`, `admin_token`,
-  `exec_token`). A per-dugdale token, when present, takes precedence over the global one.
+- **`auth`** — global fallback tokens for the two scopes (`token` and `admin_token`). A
+  per-dugdale token, when present, takes precedence over the global one.
 - **`defaults.port`** — the port used for any dugdale that gives a host but no port.
   Falls back to `7180` when unset.
 - **`dugdales`** — the list of servers. Each entry has an `id` and reaches the daemon via
@@ -548,7 +517,7 @@ selector:
   `host:7180`). A `url:` always wins over host and port. Other fields: `extends` (a template
   name), `mission_dir`, `runtime` (`command_template`, `mission_path_template`,
   `validate_mission_file`), `labels` (used by selectors), per-dugdale `token` /
-  `admin_token` / `exec_token`, an optional `proxy:` (see below), and `lanes` (a map of
+  `admin_token`, an optional `proxy:` (see below), and `lanes` (a map of
   lane name to `{concurrency, paused}`). Every dugdale must resolve to a `host` or a `url`
   after templates are applied.
 - **`dugdales[].proxy`** — an optional proxy URL (`socks5://`, `socks5h://`, `http://`,
@@ -581,12 +550,11 @@ selector:
 - **Token resolution.** For a given dugdale and scope, the client prefers the
   dugdale-local token, falls back to the matching global `auth.*` token, and then expands
   any `${VAR}` reference. An empty result after all fallbacks is an error.
-- **Which token a read uses.** Reads of one mission by id (`ctl missions show`,
-  `ctl exec show`, `logs` and the `output` subcommands, `events`) try the configured
-  tokens in turn — dispatch, exec, admin, with exec first under `ctl exec` — and move on
-  only when the daemon answers `403 forbidden_kind`, so they work for both missions and
-  execs. `ctl lanes list` and `ctl dugdales info` prefer the admin token, because the
-  daemon counts only the token's own kind for dispatch and exec tokens.
+- **Which token a command uses.** `ctl missions show`, `ctl missions output`, `logs`,
+  `events`, and `ctl staging upload`/`download` use the dispatch token when one resolves
+  for that dugdale, otherwise the admin token. `ctl lanes list` and `ctl dugdales info`
+  prefer the admin token, otherwise the dispatch token. The choice is made from the
+  configuration alone: a token the daemon rejects is not retried with the other one.
 - **Environment substitution.** `${NAME}` is replaced from the environment. A value that
   is *purely* `${VAR}` is treated as a secret kept out of the file; any literal bytes
   (including a mixed `prefix-${VAR}`) make it a plain-text token.
@@ -664,10 +632,9 @@ lost.
 Shutdown is a two-stage drain driven by signals:
 
 - The **first `SIGTERM`** moves the daemon to *draining*: all lanes pause so no new job
-  starts, `POST /v1/dispatch`, `POST /v1/exec/dispatch`, and staging uploads return
-  `503 draining`, and `/v1/readyz` flips to `503 awaiting_drain` so a load balancer
-  routes traffic away. The daemon then waits for running jobs to finish, logging a status
-  table as it goes.
+  starts, `POST /v1/dispatch` returns `503 draining` with `Retry-After: 30`, and
+  `/v1/readyz` flips to `503 awaiting_drain` so a load balancer routes traffic away. The
+  daemon then waits for running jobs to finish, logging a status table as it goes.
 - A **second `SIGTERM`/`SIGINT`** escalates to *aggressive*: every running job is signaled
   to shut down (SIGTERM, grace, then SIGKILL on its process group), re-signaling
   periodically until the set is empty.
@@ -696,9 +663,9 @@ Every subcommand inherits these persistent flags:
 `yaml` uses the same field names as `json`. `ndjson` prints one compact JSON object per
 line: one per item for listings (the next-page cursor goes to stderr as `cursor: …`) and
 one per record otherwise. Not every command honors every output format — for instance,
-`events` always emits NDJSON, `ctl missions show`, `ctl exec show` and
-`ctl dugdales config` fall back to JSON in text mode, and kill, delete, pause, continue and
-staging delete print nothing on success.
+`events` always emits NDJSON, `ctl missions show` and `ctl dugdales config` fall back to
+JSON in text mode, and kill, delete, pause, continue and staging delete print nothing on
+success.
 The global `--quiet`/`-q` is what suppresses `run`'s live event and log tailing; `run`
 also has its own `--no-progress` (hide progress events) and `--logs` (show captured
 stderr even under `--output=json|yaml`).
@@ -717,15 +684,10 @@ The CLI maps typed errors to a stable set of exit codes:
 | `5` | Authentication/authorization error (HTTP 401/403). |
 | `124` | Client wait timeout (`--wait-timeout` elapsed). |
 | `125` | Abnormal mission outcome (`killed`, `timeout`, `oom`, `crashed`, `lost`, or no terminal event). |
-| `255` | Exec transport error before any terminal outcome. |
 
 For `run`, the error line names the cause: `mission failed: <fail_reason>: <fail_message>`
 for a `failed` outcome (the generic `explicit` reason is omitted), and
 `mission did not exit normally: <outcome>[/<fail_reason>]: <fail_message>` for code `125`.
-
-For `exec`, a successful remote command's own exit code is propagated verbatim (so a
-child exiting `7` makes `letts exec` exit `7`), except that the reserved codes `124`,
-`125`, and `255` collapse to `125` to keep their meaning unambiguous.
 
 ### Targeting a host and lane
 
@@ -742,11 +704,9 @@ Commands that act on a server resolve their target with a clear precedence:
 
 `--host` accepts a comma-separated list (`s1,s2,s7`) for parallel fan-out across several
 servers; duplicates are silently removed. For the read and lifecycle subcommands under
-`ctl missions` and `ctl exec`, omitting `--host` entirely triggers **by-id fan-out**: the
-operation runs concurrently against every configured dugdale, succeeding if exactly one
-host owns the id, reporting "not found" if none do, and refusing with a conflict if more
-than one does. The exception is `ctl exec restart`, which always requires an explicit
-`--host`.
+`ctl missions`, omitting `--host` entirely triggers **by-id fan-out**: the operation runs
+concurrently against every configured dugdale, succeeding if exactly one host owns the id,
+reporting "not found" if none do, and refusing with a conflict if more than one does.
 
 The `--selector` syntax used by bulk `restart`/`delete` is a comma-separated list of
 `key=value` pairs. Supported keys are `status`, `outcome`, `lane`, `mission`,
@@ -808,46 +768,22 @@ all console tailing. Under `json` and `yaml` the result carries the captured out
 `--output-file` and `--mission-id` are rejected, and under `ndjson` a host that fails
 before its mission finishes is reported as an `{"host", "event": "error", "error"}` line.
 
-#### `letts exec`
-
-Runs an ad-hoc command on one or more dugdales (requires `exec.enabled` on the daemon and
-an exec-scope token). The command argv follows `--`. `--lane` is required, and exactly one
-of `--host`, `--match`, or `--all` must be given — exec deliberately does not auto-select
-from `selector.match`.
-
-| Flag | Meaning |
-|------|---------|
-| `--host` / `--match` / `--all` | Target one host (or a comma list), a label set, or every host with the lane. |
-| `--lane` | Lane name (required). |
-| `--script` | A local script uploaded once per dugdale via content-addressed staging. |
-| `--in role=path` | Upload an input; materialized at `$LETTS_IN_<role>`; repeatable. |
-| `--out role=path` | Download an output after success; refuses to overwrite; repeatable. |
-| `--stdin` | `none`, `single`, or `broadcast` (default inferred from a TTY and host count). |
-| `--timeout` / `--wait-timeout` | Server-side and client-side deadlines. |
-| `--detach` | Print the `exec_id` (or `group_id`) and exit. |
-| `--output` | `raw`, `prefix`, `json`, or `ndjson` (default `raw` for one host, `prefix` for several); any other value is rejected before dispatch. |
-| `--output-buffer` | Per-host buffer cap for `json` mode (bytes; default 65536). |
-| `--allow-shell` | Permit shell-form argv (the daemon still gates on `exec.allow_shell`). |
-| `--mission-id` / `--group-id` | Override the `exec_id` (single host) or `group_id` (multi-host). |
-
 #### `letts events <mission_id>`
 
 A low-level helper that streams a mission's event file as NDJSON, one event per line,
 always as NDJSON regardless of `--output`. `--host` is required. Without `--follow` it
 prints the events written so far and exits 0. `--follow` tails until the `done` event,
-reconnecting after transport errors and 5xx, 408 and 429 responses; any other 4xx (a bad
-token, or a `forbidden_kind` that no other configured token passes) ends it with an
-error, as does resuming past the `done` event of a finished mission. `--from <seq>`
-resumes from a sequence cursor.
+reconnecting after transport errors and 5xx, 408 and 429 responses; any other 4xx (such as
+a bad token) ends it with an error, as does resuming past the `done` event of a finished
+mission. `--from <seq>` resumes from a sequence cursor.
 
 #### `letts logs <mission_id>`
 
-An alias for `ctl missions output`: streams a job's `stdout`, `stderr`, or `combined`
+An alias for `ctl missions output`: streams a mission's `stdout`, `stderr`, or `combined`
 capture. Without `--host` it uses by-id fan-out. Flags: `--host`, `--match`,
 `--stream` (`stdout`|`stderr`|`combined`, default `combined`), and `--follow`.
 
-The global `--output` picks the rendering (same for `ctl missions output` and
-`ctl exec output`):
+The global `--output` picks the rendering (the same applies to `ctl missions output`):
 
 - `text` (default) prints the captured output itself; for `combined`, stdout and stderr
   interleaved in the order they were written.
@@ -869,10 +805,10 @@ The `ctl` group holds control and inspection subcommands:
   **`ctl lanes pause --host <id> --lane <name>`** and **`ctl lanes continue …`** — pause
   or resume a lane.
 - **`ctl missions list --host <id>`** — list missions with rich filters (`--status`,
-  `--outcome`, `--lane`, `--mission`, `--kind`, `--since`, `--until`, `--limit`,
-  `--cursor`). **`ctl missions show <id>`**, **`output <id>`**, **`restart [<id>]`**,
-  **`kill <id>`**, and **`delete [<id>]`** operate on a single mission (with by-id fan-out
-  when `--host` is omitted) or, for `restart`/`delete`, on a bulk `--selector` set with an
+  `--outcome`, `--lane`, `--mission`, `--since`, `--until`, `--limit`, `--cursor`).
+  **`ctl missions show <id>`**, **`output <id>`**, **`restart [<id>]`**, **`kill <id>`**,
+  and **`delete [<id>]`** operate on a single mission (with by-id fan-out when `--host` is
+  omitted) or, for `restart`/`delete`, on a bulk `--selector` set with an
   interactive confirmation that `--yes` skips. `--dry-run` lists what would be acted on
   without acting, for a single id too (after checking it exists). A bulk run acts on one
   page of matches (`--limit`, else the daemon default) and warns on stderr when more
@@ -882,11 +818,6 @@ The `ctl` group holds control and inspection subcommands:
 - **`ctl staging upload <path>`**, **`download <id>`**, **`delete <id>`**, and **`list`** —
   manage staging artifacts. Staging ids are not portable across hosts, so these are always
   per-host (`--host` required).
-- **`ctl exec list|show|output|restart|kill|delete`** — the same read surface as
-  `ctl missions`, pinned to `kind=exec` and adding a `--group` filter on `list`. Differences:
-  `restart` requires an explicit `--host` (no by-id fan-out for re-executing remote
-  commands), there is no bulk `--selector` mode for exec, and `kill` adds a
-  `--signal TERM|KILL` flag.
 
 #### `letts version`
 
@@ -901,8 +832,8 @@ A mission is just an executable script that the daemon runs. The contract betwee
 daemon and the script is small and language-agnostic.
 
 **Environment.** The daemon injects a set of `LETTS_*` variables: `LETTS_MISSION_ID`,
-`LETTS_KIND`, `LETTS_LANE`, `LETTS_WORKDIR` (a per-mission scratch directory),
-`LETTS_TMPDIR`, and `LETTS_IN_<role>` for each input file. Any `mission_env.inherit` /
+`LETTS_LANE`, `LETTS_WORKDIR` (a per-mission scratch directory), `LETTS_TMPDIR`, and
+`LETTS_IN_<role>` for each input file. Any `mission_env.inherit` /
 `mission_env.set` values from the daemon config are added as well.
 
 **Input.** The mission's JSON input is delivered on standard input.
@@ -948,66 +879,24 @@ that contains `report.sh`. The mission then runs as `letts run --mission report 
 
 ---
 
-## Remote exec
-
-Exec is the ad-hoc sibling of a mission. Instead of running a pre-registered script, the
-caller supplies the command at dispatch time. Because that is remote code execution, the
-feature is off by default and must be enabled with `exec.enabled: true` plus an
-exec-scope token (or an admin token).
-
-An exec runs through a completely separate runtime from a mission: there is no fd3
-protocol and no command template. The daemon builds a clean environment (it does not
-inherit the daemon's own environment — only the `LETTS_*` variables and a fixed `PATH`),
-materializes any uploaded script and inputs read-only into a per-exec working directory,
-runs the argv, captures standard output and standard error, and derives the outcome from
-the exit code, any signal, and the timeout.
-
-Inputs are uploaded to staging and exposed as `LETTS_IN_<role>` (and `LETTS_SCRIPT` for an
-uploaded script); declared outputs are collected only on success and committed to staging
-through the same durable two-phase finalize used by missions. Related execs can share a
-`group_id` (surfaced to the command as `LETTS_GROUP_ID` and filterable with
-`ctl exec list --group`), and an optional `display_name` provides operator-facing labeling.
-Neither the group id nor the display name participates in the idempotency fingerprint.
-
-```sh
-# Run a one-off command on every prod host with the `ops` lane:
-letts exec --match prod --lane ops -- df -h /var/lib/letts
-
-# Upload a script and an input, capture an output file, on one host.
-# The staged script always materializes at script/script under the work
-# directory (which is also the process cwd), so reference it by that path:
-letts exec --host web1 --lane ops \
-  --script ./backup.sh --in db=./dump.sql --out archive=backup.tar.gz \
-  -- sh script/script
-```
-
-Note that the daemon executes the argv verbatim — there is no shell and no environment
-expansion in the command itself, so `-- sh "$LETTS_SCRIPT"` would not work (your local
-shell would expand the variable to an empty string before letts ever saw it, and an
-escaped `$LETTS_SCRIPT` would be passed to `sh` as a literal filename). `LETTS_SCRIPT`
-and the other `LETTS_*` variables are available *inside* the spawned process — e.g. in
-the script body or within an `sh -c '...'` string.
-
----
-
 ## How it works: core mechanics and durability
 
 This section describes the guarantees that make letts safe to run unattended.
 
 ### Identifiers
 
-Every mission, exec, staging file, and exec group is identified by an RFC 9562 **UUIDv7** —
-a time-ordered identifier whose 48-bit millisecond prefix makes ids naturally sortable by
-creation time. The client supplies the id as the `Idempotency-Key` header on dispatch, and
-that value *becomes* the job's primary key, so the key and the id are one and the same.
+Every mission and staging file is identified by an RFC 9562 **UUIDv7** — a time-ordered
+identifier whose 48-bit millisecond prefix makes ids naturally sortable by creation time.
+The client supplies the id as the `Idempotency-Key` header on dispatch, and that value
+*becomes* the mission's primary key, so the key and the id are one and the same.
 
 ### Missions, statuses, and outcomes
 
-A job row carries a **kind** (`mission` or `exec`) and progresses through a small set of
-persisted **statuses**: `queued` → `running` → `done`, plus `deleting` as a cleanup
-tombstone. The "did it succeed" question is answered by a separate **outcome**, set only
-when the status reaches `done`: `success`, `failed`, `killed`, `timeout`, `crashed`,
-`lost`, or `oom`. Note that `lost` is an outcome, never a status.
+A mission progresses through a small set of persisted **statuses**: `queued` → `running` →
+`done`, plus `deleting` as a cleanup tombstone. The "did it succeed" question is answered
+by a separate **outcome**, set only when the status reaches `done`: `success`, `failed`,
+`killed`, `timeout`, `crashed`, `lost`, or `oom`. Note that `lost` is an outcome, never a
+status.
 
 When an outcome is not a plain success or failure, a free-text **fail reason** records why:
 for example `killed_by_api`, `lane_removed`, `dugdale_shutdown`, `force_delete`,
@@ -1049,7 +938,7 @@ queued-kill path, and signals running rows to stop.
 
 ### Staging
 
-Staging is the daemon's file store for inputs, scripts, and committed outputs. Each file is
+Staging is the daemon's file store for mission inputs and committed outputs. Each file is
 identified by a UUIDv7 and described by its content hash (sha256) and size. Uploads via
 `PUT /v1/staging/{id}` are **resumable**: the client declares the full sha256 and total size,
 and on a resumed upload the server verifies the on-disk prefix, re-hashes it, and appends so
@@ -1060,16 +949,15 @@ idle ones.
 
 A staging file moves through the states `uploading` → `complete`, with the additional
 `pending_output` → `committing` states used while a mission commits its outputs, and
-`deleting` as a garbage-collection tombstone. A `mission_staging_refs` row links a job to a
-file with a ref kind of `input`, `output`, or `script`. Clients can avoid re-uploading a
-blob they have already stored by looking it up with `GET /v1/staging/by-content/{sha}?size=`.
+`deleting` as a garbage-collection tombstone. A `mission_staging_refs` row links a mission
+to a file with a ref kind of `input` or `output`.
 
 Retention is computed by a TTL formula: a file referenced by any live (`queued`, `running`,
-or `deleting`) job is pinned alive; otherwise its expiry is the latest of its referencing
-jobs' finish-times plus the relevant TTL; an unreferenced file expires `staging_ttl` after
-creation. Garbage collection runs in three passes — expire, tombstone (rename into
-`tombstone/`, which keeps any in-flight download working thanks to the open-file-descriptor
-guarantee), and unlink after a short grace.
+or `deleting`) mission is pinned alive; otherwise its expiry is the latest of its
+referencing missions' finish-times plus the relevant TTL; an unreferenced file expires
+`staging_ttl` after creation. Garbage collection runs in three passes — expire, tombstone
+(rename into `tombstone/`, which keeps any in-flight download working thanks to the
+open-file-descriptor guarantee), and unlink after a short grace.
 
 ### Events, output, and the fd3 protocol
 
@@ -1090,8 +978,8 @@ the stderr line holding it becomes the fail message.
 
 ### Idempotency and fingerprints
 
-Both dispatch endpoints require an `Idempotency-Key` (a valid UUIDv7) that becomes the job
-id. The daemon computes an **input fingerprint** — `sha256` over an RFC 8785 (JSON
+The dispatch endpoint requires an `Idempotency-Key` (a valid UUIDv7) that becomes the
+mission id. The daemon computes an **input fingerprint** — `sha256` over an RFC 8785 (JSON
 Canonicalization Scheme) serialization of the request's salient fields — and compares it
 against any existing row with the same id:
 
@@ -1103,8 +991,7 @@ against any existing row with the same id:
 
 The canonicalization sorts object keys, formats numbers per ECMA-262, preserves exact 64-bit
 integers, and rejects duplicate JSON keys, so two genuinely different request bodies cannot
-collide to the same fingerprint. For execs the fingerprint binds to input *content*
-(sha256 and size), not just staging ids, and excludes the mutable group id and display name.
+collide to the same fingerprint.
 
 ### Durability and crash recovery
 
@@ -1131,12 +1018,12 @@ the row, because doing so would lie about what the public stream already showed.
 
 ### Cleanup and retention
 
-Old jobs and staging files are reclaimed by retention policy. The mission cleaner promotes
+Old missions and staging files are reclaimed by retention policy. The mission cleaner promotes
 `done` rows past their TTL to `deleting` (never racing an in-flight finalize), removes their
 on-disk artifacts, and deletes the rows in a transaction that cascades to their refs, runtime,
 and intents. `lost` rows get an extra grace on top of the failed TTL. A once-daily disk scan
 catches any file leaked by an interrupted delete. The disk-usage monitor enforces the
-`max_data_dir_size` soft cap by refusing new dispatches, execs, and uploads with
+`max_data_dir_size` soft cap by refusing new dispatches and uploads with
 `503 disk_quota_exceeded` once the directory grows too large. An hourly vacuum returns freed
 pages to the filesystem and truncates the write-ahead log.
 
@@ -1151,20 +1038,17 @@ where the machine-readable code is in the `error` field.
 
 ### Authentication and scopes
 
-Three scopes map from the three token lists: `auth.tokens` → **dispatch**, `exec.tokens` →
-**exec**, `admin.tokens` → **admin**. Admin is a superset and satisfies any required scope.
-Tokens are compared in constant time. Beyond the scope check, **kind isolation** applies: a
-dispatch token may touch only `kind=mission` rows and an exec token only `kind=exec` rows; a
-mismatch returns `403 forbidden_kind` (existence checks run first, so a record's existence
-never leaks across scopes). A missing or unknown token yields `401 unauthorized`; a valid
-token with the wrong scope yields `403 forbidden`.
+Two scopes map from the two token lists: `auth.tokens` → **dispatch** and `admin.tokens` →
+**admin**. Admin is a superset and satisfies any required scope. Tokens are compared in
+constant time. A missing or unknown token yields `401 unauthorized`; a valid token with the
+wrong scope yields `403 forbidden`.
 
-Admin- and exec-scoped endpoints are protected by a per-client-IP brute-force backoff: after
-five failures, requests are delayed with exponential backoff (capped at 30 seconds) and
-answered `429 rate_limited` with a `Retry-After`. Pure dispatch endpoints are intentionally
-exempt. The client IP is taken from `X-Forwarded-For` only when
-`network.use_x_forwarded_for` is enabled **and** the request arrives from an address listed
-in `network.trusted_proxies`; otherwise the direct peer address is used.
+Admin endpoints are protected by a per-client-IP brute-force backoff: after five failures,
+requests are delayed with exponential backoff (capped at 30 seconds) and answered
+`429 rate_limited` with a `Retry-After`. Dispatch endpoints are intentionally exempt. The
+client IP is taken from `X-Forwarded-For` only when `network.use_x_forwarded_for` is
+enabled **and** the request arrives from an address listed in `network.trusted_proxies`;
+otherwise the direct peer address is used.
 
 ### Routes
 
@@ -1177,21 +1061,20 @@ in `network.trusted_proxies`; otherwise the direct peer address is used.
 | `GET /v1/version` | Build metadata: `{version, commit, built_at}`. |
 | `GET /v1/metrics` | Prometheus exposition (expected to be firewalled). |
 
-**Dispatch / exec:**
+**Dispatch:**
 
 | Method · Path | Scope | Description |
 |---|---|---|
 | `POST /v1/dispatch` | dispatch | Enqueue a mission. Requires an `Idempotency-Key` (UUIDv7) that becomes the `mission_id`. `202 {"mission_id","status":"queued"}` for a new key; replay semantics otherwise. |
-| `POST /v1/exec/dispatch` | exec | Run an arbitrary command (only when `exec.enabled`). `202 {"exec_id","status":"queued"}`. Returns `404 feature_disabled` when exec is off. |
 
-**Mission read and streaming** (scope: dispatch *or* exec, kind-isolated; admin sees all):
+**Mission read and streaming** (scope: dispatch):
 
 | Method · Path | Description |
 |---|---|
 | `GET /v1/missions/{id}` | The full mission resource, including joined input/output staging metadata. |
 | `GET /v1/missions/{id}/events` | The NDJSON events stream. `?from=<seq>` resumes from a cursor; `?follow=true` tails until the terminal `done`. |
 | `GET /v1/missions/{id}/output` | The captured output. `?stream=` selects `stdout`, `stderr`, or `combined` (required); `?follow=true` tails. |
-| `GET /v1/missions` | **admin** — list with cursor pagination and filters (`status`, `outcome`, `lane`, `mission`, `kind`, `group_id`, `restarted_from`, `order`, `since`, `until`, `limit` ≤ 1000, `cursor`). |
+| `GET /v1/missions` | **admin** — list with cursor pagination and filters (`status`, `outcome`, `lane`, `mission`, `restarted_from`, `order`, `since`, `until`, `limit` ≤ 1000, `cursor`). |
 
 **Mission lifecycle** (scope: admin):
 
@@ -1210,23 +1093,22 @@ in `network.trusted_proxies`; otherwise the direct peer address is used.
 | `GET /v1/admin/state` | The current applied configuration. |
 | `POST /v1/admin/lanes/{name}/pause`, `.../continue` | Pause or resume a lane (provenance `ctl`). |
 
-**Inspect** (scope: dispatch *or* exec, so an exec-only token can still enumerate lanes):
+**Inspect** (scope: dispatch):
 
 | Method · Path | Description |
 |---|---|
-| `GET /v1/dugdale` | Daemon summary: version, uptime, queue counts (kind-filtered per scope). |
+| `GET /v1/dugdale` | Daemon summary: version, uptime, queue counts. |
 | `GET /v1/lanes` | Per-lane status: concurrency, paused, queued, running. |
 
 **Staging:**
 
 | Method · Path | Scope | Description |
 |---|---|---|
-| `PUT /v1/staging/{id}` | dispatch or exec | Resumable upload (`X-Letts-Sha256`, `Content-Length`/`Content-Range`). |
-| `HEAD /v1/staging/{id}` | dispatch or exec | Resume probe; returns received/total byte headers. |
-| `GET /v1/staging/{id}` | dispatch or exec | Download (Range-capable). |
-| `DELETE /v1/staging/{id}` | admin | Delete; `?force=true` cascades dependent jobs to `deleting`. |
+| `PUT /v1/staging/{id}` | dispatch | Resumable upload (`X-Letts-Sha256`, `Content-Length`/`Content-Range`). |
+| `HEAD /v1/staging/{id}` | dispatch | Resume probe; returns received/total byte headers. |
+| `GET /v1/staging/{id}` | dispatch | Download (Range-capable). |
+| `DELETE /v1/staging/{id}` | admin | Delete; `?force=true` cascades dependent missions to `deleting`. |
 | `GET /v1/staging` | admin | List a mission's staging rows (`mission_id` required). |
-| `GET /v1/staging/by-content/{sha}` | exec | De-dup lookup by content hash and `size`. |
 
 ---
 
@@ -1235,7 +1117,7 @@ in `network.trusted_proxies`; otherwise the direct peer address is used.
 The daemon exposes Prometheus metrics at `GET /v1/metrics`, including:
 
 - `letts_dugdale_info{version,commit}` and `letts_dugdale_uptime_seconds`;
-- `letts_missions_total{kind,lane,outcome}` and `letts_mission_duration_seconds` (a histogram);
+- `letts_missions_total{lane,outcome}` and `letts_mission_duration_seconds` (a histogram);
 - per-lane gauges `letts_lane_queued`, `letts_lane_running`, `letts_lane_concurrency`,
   `letts_lane_paused`;
 - `letts_storage_bytes{kind=db|output|staging}`;
@@ -1274,8 +1156,6 @@ Security recommendations that the daemon's own guards reinforce:
 - **Protect the configuration files.** Any config that contains a plain-text token must be
   `0600`/`0400`; both the daemon and the client enforce this. Prefer keeping client tokens in
   the environment (`${VAR}`) so the file itself holds no secret.
-- **Treat exec as remote code execution.** Leave `exec.enabled` off unless you need it, scope
-  its tokens narrowly, and remember that `exec.allow_shell` widens the attack surface.
 - **Rotate tokens** by editing the token lists and **restarting the daemon** — there is no
   config hot-reload or SIGHUP handling. Multiple tokens per scope still make rotation
   non-disruptive *for clients*: add the new token, restart, migrate the clients, remove the
@@ -1327,7 +1207,7 @@ Running jobs are then TERM'd, given the kill grace, KILL'd if needed, and record
 ### Clients and UI
 
 letts itself ships no web UI. The companion project **arby** (separate repository and
-binary) provides a dashboard — missions, lanes, live tails, exec history — by aggregating
+binary) provides a dashboard — missions, lanes, live tails — by aggregating
 the same HTTP API across a fleet of dugdales. Official client libraries: Go
 (`pkg/lettsclient` in this repository) and PHP (the separate `letts-php` package, used by
 the dogfood harness in `scripts/dogfood`).

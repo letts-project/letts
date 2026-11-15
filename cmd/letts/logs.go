@@ -25,7 +25,7 @@ func newLogsCmd() *cobra.Command {
 				return err
 			}
 			defer ac.Close()
-			return runCtlMissionsOutput(cmd, ac, format, readScopesMission, args[0], host, stream, follow, match)
+			return runCtlMissionsOutput(cmd, ac, format, args[0], host, stream, follow, match)
 		},
 	}
 	c.Flags().StringVar(&host, "host", "", "dugdale id (else by-id fan-out)")

@@ -18,7 +18,7 @@ import (
 
 // missionCollectQuota builds a CollectQuota from a *config.DugdaleConfig
 // when both DiskUsage and MaxDataDirSize are wired; otherwise returns nil
-// (no quota check). Shared by the two call sites (waiter, exec_runtime).
+// (no quota check).
 func missionCollectQuota(cfg *config.DugdaleConfig) *CollectQuota {
 	if cfg == nil || cfg.DiskUsage == nil || cfg.Limits.MaxDataDirSize <= 0 {
 		return nil
@@ -88,7 +88,7 @@ type CollectedOutput struct {
 }
 
 // CollectQuota enforces the max_data_dir_size soft cap during output
-// collection. dispatch/exec_dispatch/staging PUT already gate
+// collection. dispatch/staging PUT already gate
 // new work on DiskUsage() before they start, but a long-running mission
 // that started under the cap could still emit gigabytes of outputs into
 // the data_dir without consulting it. CollectQuota re-consults the cached

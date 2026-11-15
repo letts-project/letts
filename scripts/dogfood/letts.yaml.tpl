@@ -1,7 +1,6 @@
 auth:
   token: dogfood-dispatch
   admin_token: dogfood-admin
-  exec_token: dogfood-exec
 
 dugdales:
   - id: local

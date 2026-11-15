@@ -21,7 +21,7 @@ type FileRef struct {
 	Size      int64
 }
 
-// MissionInput is the fingerprint input shape (kind=mission only).
+// MissionInput is the fingerprint input shape.
 type MissionInput struct {
 	Lane           string
 	Mission        string
@@ -33,6 +33,9 @@ type MissionInput struct {
 // Mission computes sha256(jcs(payload)) where payload follows the schema.
 func Mission(in MissionInput) (string, error) {
 	inputSha := sha256.Sum256(in.InputCanonical)
+	// The constant "kind" member is part of the fingerprint format: dropping
+	// it would change every fingerprint and break idempotent replays of
+	// missions already stored with the old value.
 	payload := map[string]any{
 		"kind":         "mission",
 		"lane":         in.Lane,

@@ -36,11 +36,9 @@ import (
 // signals.
 type FinalizeInputs struct {
 	MissionID string
-	// Kind ("mission"|"exec") and Lane label the missions_total and
-	// mission_duration_seconds metrics emitted by commitFinalize. Repair
-	// callers that don't have these in scope use storage.GetMissionLabels
-	// to look them up at intent-replay time.
-	Kind            string
+	// Lane labels the missions_total and mission_duration_seconds metrics
+	// emitted by commitFinalize. Repair callers that don't have it in scope
+	// use storage.GetMissionLabels to look it up at intent-replay time.
 	Lane            string
 	Outcome         OutcomeResult
 	Outputs         []CollectedOutput
@@ -169,7 +167,7 @@ func Finalize(ctx context.Context, db *sql.DB, in FinalizeInputs) error {
 
 	// Fast path: no outputs to commit.
 	if len(in.Outputs) == 0 {
-		return commitFinalize(ctx, db, ew, &intent, nil, in.Cfg, in.Kind, in.Lane, in.TimeStartedMs)
+		return commitFinalize(ctx, db, ew, &intent, nil, in.Cfg, in.Lane, in.TimeStartedMs)
 	}
 
 	// Phase B step 1: transition staging rows and intent phase to committing.
@@ -196,7 +194,7 @@ func Finalize(ctx context.Context, db *sql.DB, in FinalizeInputs) error {
 			// files; regular cleanup doesn't transition committing
 			// rows.
 			return revertFailedCommit(ctx, db, ew, &intent, in.Outputs, nowFn,
-				in.Cfg, in.Kind, in.Lane, in.TimeStartedMs,
+				in.Cfg, in.Lane, in.TimeStartedMs,
 				"output_commit_failed",
 				fmt.Errorf("rename %s: %w", op.TmpPath, err))
 		}
@@ -209,19 +207,19 @@ func Finalize(ctx context.Context, db *sql.DB, in FinalizeInputs) error {
 			nil, "output_commit")
 	}
 
-	return commitFinalize(ctx, db, ew, &intent, in.Outputs, in.Cfg, in.Kind, in.Lane, in.TimeStartedMs)
+	return commitFinalize(ctx, db, ew, &intent, in.Outputs, in.Cfg, in.Lane, in.TimeStartedMs)
 }
 
 // CommitFromIntent re-enters the commit path from a stored intent. It
 // unmarshals intent.Outputs, calls commitFinalize. Used by startup repair
 // to finish a Phase B step 3-4 (or fast path) sequence after a crash.
 func CommitFromIntent(ctx context.Context, db *sql.DB, ew *eventfile.Writer, intent *storage.FinalizeIntent, cfg FinalizeConfig) error {
-	kind, lane, ts, err := storage.GetMissionLabels(ctx, db, intent.MissionID)
+	lane, ts, err := storage.GetMissionLabels(ctx, db, intent.MissionID)
 	if err != nil {
 		return fmt.Errorf("metric labels: %w", err)
 	}
 	outputs := unmarshalIntentOutputs(intent.Outputs, cfg.DataDir)
-	return commitFinalize(ctx, db, ew, intent, outputs, cfg, kind, lane, ts)
+	return commitFinalize(ctx, db, ew, intent, outputs, cfg, lane, ts)
 }
 
 // ContinuePhaseB resumes Phase B from a 'prepared' intent: marks staging rows
@@ -229,13 +227,13 @@ func CommitFromIntent(ctx context.Context, db *sql.DB, ew *eventfile.Writer, int
 // falls through to the fast-path commit. Used by startup repair after
 // verifying tmp files survived the crash.
 func ContinuePhaseB(ctx context.Context, db *sql.DB, ew *eventfile.Writer, intent *storage.FinalizeIntent, cfg FinalizeConfig) error {
-	kind, lane, ts, err := storage.GetMissionLabels(ctx, db, intent.MissionID)
+	lane, ts, err := storage.GetMissionLabels(ctx, db, intent.MissionID)
 	if err != nil {
 		return fmt.Errorf("metric labels: %w", err)
 	}
 	outputs := unmarshalIntentOutputs(intent.Outputs, cfg.DataDir)
 	if len(outputs) == 0 {
-		return commitFinalize(ctx, db, ew, intent, nil, cfg, kind, lane, ts)
+		return commitFinalize(ctx, db, ew, intent, nil, cfg, lane, ts)
 	}
 	if err := storage.WithWriterRetry(ctx, db, func(c *sql.Conn) error {
 		for _, op := range outputs {
@@ -252,7 +250,7 @@ func ContinuePhaseB(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 	for _, op := range outputs {
 		if err := os.Rename(op.TmpPath, op.FinalPath); err != nil {
 			return revertFailedCommit(ctx, db, ew, intent, outputs, time.Now,
-				cfg, kind, lane, ts,
+				cfg, lane, ts,
 				"output_commit_failed",
 				fmt.Errorf("rename %s: %w", op.TmpPath, err))
 		}
@@ -260,7 +258,7 @@ func ContinuePhaseB(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 			fsutil.SyncDir(filepath.Dir(op.FinalPath)),
 			nil, "output_commit")
 	}
-	return commitFinalize(ctx, db, ew, intent, outputs, cfg, kind, lane, ts)
+	return commitFinalize(ctx, db, ew, intent, outputs, cfg, lane, ts)
 }
 
 // RevertIntentToFailed converts a stored intent into a durable
@@ -275,12 +273,12 @@ func ContinuePhaseB(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 // "we never wrote successfully" from "we wrote then disk content
 // drifted" in audit logs and metrics.
 func RevertIntentToFailed(ctx context.Context, db *sql.DB, ew *eventfile.Writer, intent *storage.FinalizeIntent, cfg FinalizeConfig, failReason, reason string) error {
-	kind, lane, ts, err := storage.GetMissionLabels(ctx, db, intent.MissionID)
+	lane, ts, err := storage.GetMissionLabels(ctx, db, intent.MissionID)
 	if err != nil {
 		return fmt.Errorf("metric labels: %w", err)
 	}
 	outputs := unmarshalIntentOutputs(intent.Outputs, cfg.DataDir)
-	return revertFailedCommit(ctx, db, ew, intent, outputs, time.Now, cfg, kind, lane, ts, failReason, errors.New(reason))
+	return revertFailedCommit(ctx, db, ew, intent, outputs, time.Now, cfg, lane, ts, failReason, errors.New(reason))
 }
 
 // unmarshalIntentOutputs decodes the persisted Outputs JSON. A corrupt
@@ -394,13 +392,13 @@ func resolveIntentPath(dataDir, rel, legacyAbs string) string {
 // location), refs inserted, intent removed.
 //
 // On successful commit, emits Prometheus letts_missions_total and
-// letts_mission_duration_seconds labelled with kind/lane/outcome. Repair
-// paths look up kind/lane via storage.GetMissionLabels before calling this.
+// letts_mission_duration_seconds labelled with lane/outcome. Repair
+// paths look up the lane via storage.GetMissionLabels before calling this.
 //
 // cfg.TTL drives the post-commit RecalcStagingTTL pass that replaces the
 // 24h Phase-A2 sentinel with the policy ceiling for the just-finished
 // mission's outputs. A zero policy skips the recalc.
-func commitFinalize(ctx context.Context, db *sql.DB, ew *eventfile.Writer, intent *storage.FinalizeIntent, outputs []CollectedOutput, cfg FinalizeConfig, kind, lane string, timeStartedMs int64) error {
+func commitFinalize(ctx context.Context, db *sql.DB, ew *eventfile.Writer, intent *storage.FinalizeIntent, outputs []CollectedOutput, cfg FinalizeConfig, lane string, timeStartedMs int64) error {
 	dataDir := cfg.DataDir
 	fields, err := extractDoneFields(intent.DoneEvent)
 	if err != nil {
@@ -553,11 +551,11 @@ func commitFinalize(ctx context.Context, db *sql.DB, ew *eventfile.Writer, inten
 		// Same finishedMs used for DB and metric — DB and metric agree.
 		duration = time.Duration(finishedMs-timeStartedMs) * time.Millisecond
 	}
-	metrics.ObserveMissionDone(kind, lane, intent.Outcome, duration)
+	metrics.ObserveMissionDone(lane, intent.Outcome, duration)
 	// Structured INFO line so log-only observers see every terminal
 	// mission outcome (without polling /v1/events).
 	attrs := []any{"phase", "finished",
-		"mission_id", intent.MissionID, "kind", kind, "lane", lane,
+		"mission_id", intent.MissionID, "lane", lane,
 		"outcome", intent.Outcome, "duration_ms", duration.Milliseconds()}
 	if intent.Outcome != "success" {
 		if intent.FailReason.String != "" {
@@ -589,9 +587,9 @@ const maxLoggedFailMessage = 512
 // "output_commit_failed" (tmp missing, rename failed) or
 // "output_commit_corrupt" (sha mismatch on pre-renamed final).
 //
-// kind/lane/timeStartedMs are forwarded to commitFinalize so the resulting
+// lane/timeStartedMs are forwarded to commitFinalize so the resulting
 // missions_total/duration metrics carry correct labels for the revert path.
-func revertFailedCommit(ctx context.Context, db *sql.DB, ew *eventfile.Writer, intent *storage.FinalizeIntent, outputs []CollectedOutput, nowFn func() time.Time, cfg FinalizeConfig, kind, lane string, timeStartedMs int64, failReason string, cause error) error {
+func revertFailedCommit(ctx context.Context, db *sql.DB, ew *eventfile.Writer, intent *storage.FinalizeIntent, outputs []CollectedOutput, nowFn func() time.Time, cfg FinalizeConfig, lane string, timeStartedMs int64, failReason string, cause error) error {
 	for _, op := range outputs {
 		_ = os.Remove(op.TmpPath)
 		_ = os.Remove(op.FinalPath)
@@ -656,7 +654,7 @@ func revertFailedCommit(ctx context.Context, db *sql.DB, ew *eventfile.Writer, i
 	intent.DoneSeq = newSeq
 	intent.DoneEvent = string(newDoneJSON)
 
-	return commitFinalize(ctx, db, ew, intent, nil, cfg, kind, lane, timeStartedMs)
+	return commitFinalize(ctx, db, ew, intent, nil, cfg, lane, timeStartedMs)
 }
 
 // BuildDoneFields exposes the canonical done-event payload builder to the

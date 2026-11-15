@@ -73,14 +73,6 @@ func (h *LifecycleHandler) restartOne(ctx context.Context, id string) opOutcome 
 	if old.Status == storage.StatusDeleting {
 		return opOutcome{Status: http.StatusConflict, ErrorCode: "mission_deleting"}
 	}
-	// Kind-vs-scope gate. Runs after 404/deleting checks so
-	// existence/pseudo-non-existence stays uncorrelated with caller scope
-	// (matches RequireKindForScope ordering). Safe today because all
-	// restart routes are admin-only, but blocks future leak vectors if
-	// dispatch/exec scope is ever added to bulk-restart.
-	if gate := gateKindForMission(ctx, old); gate.Status != 0 {
-		return gate
-	}
 	if old.Status != storage.StatusDone {
 		return opOutcome{Status: http.StatusConflict, ErrorCode: "mission_not_done",
 			ErrorMsg: "restart requires status=done",
@@ -189,11 +181,8 @@ func (h *LifecycleHandler) restartOne(ctx context.Context, id string) opOutcome 
 		}
 		nm := &storage.Mission{
 			ID:               newID,
-			Kind:             old.Kind,
 			Lane:             old.Lane,
 			MissionName:      old.MissionName,
-			DisplayName:      old.DisplayName,
-			GroupID:          old.GroupID,
 			Status:           storage.StatusQueued,
 			Input:            old.Input,
 			InputFingerprint: old.InputFingerprint,
@@ -214,7 +203,7 @@ func (h *LifecycleHandler) restartOne(ctx context.Context, id string) opOutcome 
 				return err
 			}
 		}
-		// Dispatch and exec_dispatch both recalc TTL after
+		// Dispatch recalcs TTL after
 		// InsertRef so the staging row lifts to MaxInt64 (queued/running
 		// ref → "infinity"). Restart did not, leaving the row
 		// pinned to the source mission's failed_ttl — under that TTL the
@@ -223,8 +212,6 @@ func (h *LifecycleHandler) restartOne(ctx context.Context, id string) opOutcome 
 		ttl := storage.TTLPolicy{
 			MissionSuccess: h.Cfg.Cleanup.SuccessTTL,
 			MissionFailed:  h.Cfg.Cleanup.FailedTTL,
-			ExecSuccess:    h.Cfg.Exec.ExecSuccessTTL,
-			ExecFailed:     h.Cfg.Exec.ExecFailedTTL,
 			StagingTTL:     h.Cfg.Cleanup.StagingTTL,
 			DownloadGrace:  h.Cfg.Cleanup.DownloadedGrace,
 		}
@@ -236,20 +223,12 @@ func (h *LifecycleHandler) restartOne(ctx context.Context, id string) opOutcome 
 				return err
 			}
 		}
-		if old.Kind == storage.KindMission {
-			oldRT, err := storage.GetRuntime(ctx, c, id)
-			if err != nil {
-				return err
-			}
-			oldRT.MissionID = newID
-			if err := storage.InsertRuntime(ctx, c, oldRT); err != nil {
-				return err
-			}
+		oldRT, err := storage.GetRuntime(ctx, c, id)
+		if err != nil {
+			return err
 		}
-		// For kind=exec, no mission_runtime row exists (exec_dispatch.go
-		// does not insert one). Runner re-parses payload from missions.input
-		// on pickup via internal/mission/exec_runtime.go execPayload.
-		return nil
+		oldRT.MissionID = newID
+		return storage.InsertRuntime(ctx, c, oldRT)
 	}); err != nil {
 		_ = os.Remove(filepath.Join(outDir, newID+"-events"))
 		if errors.Is(err, errRefExpiredInTx) {

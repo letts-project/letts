@@ -11,7 +11,7 @@ func TestRuntimeRoundTrip(t *testing.T) {
 	db := setupDB(t)
 	id := ids.NewUUIDv7()
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: id, Kind: KindMission, Lane: "x", MissionName: "m",
+		ID: id, Lane: "x", MissionName: "m",
 		Status: StatusQueued, Input: []byte("{}"), InputFingerprint: "f",
 		TimeCreatedMs: 1,
 	})

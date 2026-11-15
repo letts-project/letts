@@ -162,7 +162,6 @@ func TestLoadInputsOne(t *testing.T) {
 	// Must insert mission row first (FK constraint).
 	if err := storage.InsertMission(ctx, db, &storage.Mission{
 		ID:            missionID,
-		Kind:          storage.KindMission,
 		Lane:          "normal",
 		MissionName:   "test_mission",
 		Status:        storage.StatusQueued,
@@ -281,7 +280,6 @@ func TestLoadInputsSkipsNonInput(t *testing.T) {
 	// Must insert mission row first (FK constraint).
 	if err := storage.InsertMission(ctx, db, &storage.Mission{
 		ID:            missionID,
-		Kind:          storage.KindMission,
 		Lane:          "normal",
 		MissionName:   "test_mission",
 		Status:        storage.StatusQueued,

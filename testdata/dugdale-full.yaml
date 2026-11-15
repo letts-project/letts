@@ -35,7 +35,6 @@ limits:
   max_fail_details_size: 256KiB
   max_dispatch_body_size: 2MiB
   max_mission_input_size: 1MiB
-  max_exec_body_size:     1MiB
   max_apply_body_size:    1MiB
   max_progress_rate:     50
   progress_buffer_size:  256KiB
@@ -51,13 +50,3 @@ limits:
   default_kill_grace:    5s
   reader_post_exit_grace: 5s
   cache_size:            -16000
-
-exec:
-  enabled: false
-  tokens: []
-  allow_shell: false
-  max_script_size:        256KiB
-  max_inputs_per_exec:    32
-  max_outputs_per_exec:   32
-  exec_success_ttl:       1h
-  exec_failed_ttl:        24h

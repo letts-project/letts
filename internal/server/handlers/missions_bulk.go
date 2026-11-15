@@ -87,7 +87,7 @@ func decodeBulk(w http.ResponseWriter, r *http.Request) (bulkRequest, bool) {
 	var body bulkRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		// A MaxBytesReader-wrapped body surfaces *http.MaxBytesError
-		// here; requires 413, consistent with dispatch/exec/apply.
+		// here; requires 413, consistent with dispatch/apply.
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			httputil.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large",

@@ -57,9 +57,6 @@ func (h *OutputHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusGone, "mission_deleting", "mission is being deleted", nil)
 		return
 	}
-	if !RequireKindForScope(w, r, m) {
-		return
-	}
 
 	follow := strings.EqualFold(r.URL.Query().Get("follow"), "true")
 
@@ -119,7 +116,7 @@ func (h *OutputHandler) Stream(w http.ResponseWriter, r *http.Request) {
 			missionTerminal := gerr == nil &&
 				(cur.Status == storage.StatusDone || cur.Status == storage.StatusDeleting)
 			// Always try the file BEFORE giving up on a terminal mission:
-			// a fast exec (e.g. `uptime`) can finish and flip status=done in
+			// a fast mission can finish and flip status=done in
 			// the window between the client GET arriving and the next poll
 			// tick. The runtime open()s the output files up front, so once
 			// the lane runner picks the mission up, the file exists even if

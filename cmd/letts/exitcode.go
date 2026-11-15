@@ -117,19 +117,6 @@ func mapErrorToExit(err error) int {
 	if err == nil {
 		return exitOK
 	}
-	// Exec markers come FIRST so that wrapping (e.g. *ExecTransportError
-	// containing a *ConfigError) overrides the inner-error classification.
-	// All pre-terminal errors in the exec path must map to CLI 255 —
-	// without this ordering errors.As walks the Unwrap chain and matches
-	// the inner *ConfigError → exit 3, the wrong class.
-	var ete *ExecTransportError
-	if errors.As(err, &ete) {
-		return 255
-	}
-	var eoe *ExecOutcomeError
-	if errors.As(err, &eoe) {
-		return mapExecOutcomeExitCode(eoe.Outcome, eoe.ExitCode)
-	}
 	var bu *BadUsageError
 	if errors.As(err, &bu) {
 		return exitBadUsage

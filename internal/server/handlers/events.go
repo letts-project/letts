@@ -64,10 +64,6 @@ func (h *EventsHandler) Stream(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusGone, "mission_deleting", "mission is being deleted", nil)
 		return
 	}
-	if !RequireKindForScope(w, r, m) {
-		return
-	}
-
 	// Parse query params.
 	q := r.URL.Query()
 	follow := strings.EqualFold(q.Get("follow"), "true")

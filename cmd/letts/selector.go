@@ -73,14 +73,6 @@ func ParseSelector(s string, now time.Time) (Selector, error) {
 }
 
 // ToListOpts converts a Selector into the wire-shaped ListMissionsOpts.
-//
-// Kind is pinned to "mission": the only consumers of ToListOpts are the bulk
-// restart/delete runners, and bulk selectors operate on named missions only —
-// exec records share the same id namespace but are managed individually via
-// `ctl exec` (which has no --selector by design). Without the pin the daemon
-// would return BOTH kinds for an unqualified selector, so a bulk restart
-// would re-execute ad-hoc exec commands and a bulk delete would wipe exec
-// history as collateral.
 func (s Selector) ToListOpts() lettsclient.ListMissionsOpts {
 	return lettsclient.ListMissionsOpts{
 		Status:        s.Status,
@@ -88,7 +80,6 @@ func (s Selector) ToListOpts() lettsclient.ListMissionsOpts {
 		Lane:          s.Lane,
 		Mission:       s.Mission,
 		MissionPrefix: s.MissionPrefix,
-		Kind:          "mission",
 		SinceMs:       s.SinceMs,
 		UntilMs:       s.UntilMs,
 	}

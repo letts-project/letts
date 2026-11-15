@@ -191,7 +191,7 @@ func run(argv []string, stdout io.Writer) int {
 	go (&metrics.Poller{DB: db, Mgr: rt.Manager, DataDir: cfg.DataDir, Logger: logger}).Run(ctx)
 
 	// Disk-usage monitor for the max_data_dir_size enforcement.
-	// dispatch, exec_dispatch, and staging PUT consult its cached Size();
+	// dispatch and staging PUT consult its cached Size();
 	// mission output collection consults cfg.DiskUsage so the
 	// soft cap also applies to mid-mission outputs, not just new work.
 	diskUsage := &cleanup.DiskUsageMonitor{DataDir: cfg.DataDir, Logger: logger}
@@ -200,7 +200,7 @@ func run(argv []string, stdout io.Writer) int {
 
 	publishBuildInfo()
 
-	// Coordinator built first so dispatch/exec_dispatch/health handlers can
+	// Coordinator built first so dispatch/health handlers can
 	// gate their behavior on the drain phase (stop accepting new
 	// requests and flip readyz to 503 when SIGTERM arrives).
 	coord := shutdown.New(db, cfg, rt.Manager, rt, logger)
@@ -319,17 +319,15 @@ func parseTrustedProxies(raw []string, logger *slog.Logger) []*net.IPNet {
 // wireRoutes constructs every handler with its deps and registers it on mux,
 // applying the right per-route middleware (auth scope, body limits).
 // The shutdown coordinator is passed so handlers that participate in
-// graceful shutdown (dispatch/exec_dispatch refuse new requests; readyz
+// graceful shutdown (dispatch refuses new requests; readyz
 // flips to 503) can read its current phase.
 func wireRoutes(mux *http.ServeMux, cfg *config.DugdaleConfig, db *sql.DB, rt *runtime.Runtime, uploadLock *stagingstore.UploadLock, logger *slog.Logger, coord *shutdown.Coordinator, diskUsage func() int64) {
-	// Brute-force tracker for admin/exec auth: 1h sliding TTL,
-	// keyed by client IP (XFF-aware when network.trusted_proxies is
-	// configured). Dispatch endpoints intentionally skip — see auth.go
-	// scopeIncludesProtected.
+	// Brute-force tracker for admin auth: 1h sliding TTL, keyed by client
+	// IP (XFF-aware when network.trusted_proxies is configured). Dispatch
+	// endpoints intentionally skip it.
 	trustedCIDRs := parseTrustedProxies(cfg.Network.TrustedProxies, logger)
 	authCfg := middleware.AuthConfig{
 		Dispatch:         cfg.Auth.Tokens,
-		Exec:             cfg.Exec.Tokens,
 		Admin:            cfg.Admin.Tokens,
 		BruteForce:       middleware.NewBruteForceTracker(1 * time.Hour),
 		TrustedProxies:   trustedCIDRs,
@@ -354,47 +352,18 @@ func wireRoutes(mux *http.ServeMux, cfg *config.DugdaleConfig, db *sql.DB, rt *r
 		middleware.Auth(authCfg, middleware.ScopeDispatch,
 			middleware.BodyLimit(cfg.Limits.MaxDispatchBodySize, dispatchHandler.Dispatch)))
 
-	// Exec dispatch (Bearer exec scope, body limit) — gated by cfg.Exec.Enabled.
-	// Disabled mode registers a pre-auth 404 stub so the feature surface is
-	// indistinguishable from a build without exec support.
-	if cfg.Exec.Enabled {
-		execDispatchHandler := &handlers.ExecDispatchHandler{
-			DB: db, Cfg: cfg, DataDir: cfg.DataDir,
-			LaneManager: rt.Manager,
-			KeyMu:       handlers.NewKeyMutex(),
-			GetApplied:  func() (*apply.AppliedState, bool) { return readApplied(db) },
-			Logger:      logger,
-			IsDraining:  coord.BlockNewDispatches,
-			DiskUsage:   diskUsage,
-		}
-		mux.HandleFunc("POST /v1/exec/dispatch",
-			middleware.Auth(authCfg, middleware.ScopeExec,
-				middleware.BodyLimit(cfg.Limits.MaxExecBodySize, execDispatchHandler.Dispatch)))
-	} else {
-		mux.HandleFunc("POST /v1/exec/dispatch", handlers.ExecDisabledStub())
-	}
-
-	// Events stream — dispatch or exec, gated by mission kind.
 	eventsHandler := &handlers.EventsHandler{DataDir: cfg.DataDir, DB: db}
 	mux.HandleFunc("GET /v1/missions/{id}/events",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			eventsHandler.Stream))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, eventsHandler.Stream))
 
-	// Output stream — dispatch or exec, gated by mission kind.
 	outputHandler := &handlers.OutputHandler{DataDir: cfg.DataDir, DB: db}
 	mux.HandleFunc("GET /v1/missions/{id}/output",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			outputHandler.Stream))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, outputHandler.Stream))
 
-	// Mission GET — dispatch or exec, gated by mission kind.
 	// Listing missions is admin-only.
 	missionsHandler := &handlers.MissionsHandler{DB: db}
 	mux.HandleFunc("GET /v1/missions/{id}",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			missionsHandler.GetByID))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, missionsHandler.GetByID))
 	mux.HandleFunc("GET /v1/missions",
 		middleware.Auth(authCfg, middleware.ScopeAdmin, missionsHandler.List))
 
@@ -437,24 +406,14 @@ func wireRoutes(mux *http.ServeMux, cfg *config.DugdaleConfig, db *sql.DB, rt *r
 	mux.HandleFunc("POST /v1/admin/lanes/{name}/continue",
 		middleware.Auth(authCfg, middleware.ScopeAdmin, adminHandler.ContinueLane))
 
-	// Inspect: read-only summary, accessible to all 3 scopes.
-	// Holders of exec-only tokens (no dispatch token) MUST be able to read
-	// /v1/dugdale and /v1/lanes to enumerate available lanes.
 	inspectHandler := &handlers.Inspect{DB: db, Manager: rt.Manager, StartedAt: time.Now()}
 	mux.HandleFunc("GET /v1/dugdale",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			inspectHandler.Dugdale))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, inspectHandler.Dugdale))
 	mux.HandleFunc("GET /v1/lanes",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			inspectHandler.Lanes))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, inspectHandler.Lanes))
 
-	// Staging: PUT/HEAD/GET per-id are shared between dispatch and exec
-	// callers (both kinds of mission may stage I/O). DELETE stays admin-only.
-	// List is admin-only. by-content is exec-only —
-	// dispatch tokens never need content lookup; admin still passes via
-	// superset.
+	// Staging: PUT/HEAD/GET per-id take a dispatch token; DELETE and List
+	// are admin-only.
 	stagingHandler := &handlers.StagingHandler{
 		DB: db, Cfg: cfg, DataDir: cfg.DataDir, UploadLock: uploadLock,
 		// DELETE ?force=true must retire running referencing missions via
@@ -464,25 +423,15 @@ func wireRoutes(mux *http.ServeMux, cfg *config.DugdaleConfig, db *sql.DB, rt *r
 		DiskUsage: diskUsage,
 	}
 	mux.HandleFunc("PUT /v1/staging/{id}",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			stagingHandler.Put))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, stagingHandler.Put))
 	mux.HandleFunc("HEAD /v1/staging/{id}",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			stagingHandler.Head))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, stagingHandler.Head))
 	mux.HandleFunc("GET /v1/staging/{id}",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeDispatch, middleware.ScopeExec},
-			stagingHandler.Get))
+		middleware.Auth(authCfg, middleware.ScopeDispatch, stagingHandler.Get))
 	mux.HandleFunc("DELETE /v1/staging/{id}",
 		middleware.Auth(authCfg, middleware.ScopeAdmin, stagingHandler.Delete))
 	mux.HandleFunc("GET /v1/staging",
 		middleware.Auth(authCfg, middleware.ScopeAdmin, stagingHandler.List))
-	mux.HandleFunc("GET /v1/staging/by-content/{sha}",
-		middleware.AuthEither(authCfg,
-			[]middleware.Scope{middleware.ScopeExec},
-			stagingHandler.ByContent))
 
 	_ = logger
 }

@@ -32,7 +32,6 @@ func finalizeFixture(t *testing.T) (id, dataDir string, db *sql.DB) {
 
 	m := storage.Mission{
 		ID:               id,
-		Kind:             storage.KindMission,
 		Lane:             "normal",
 		MissionName:      "Finalize",
 		Status:           storage.StatusRunning,
@@ -706,7 +705,6 @@ func TestFinalizeFinishedLogIncludesFailure(t *testing.T) {
 	msg := strings.Repeat("ж", 1000)
 	if err := Finalize(context.Background(), db, FinalizeInputs{
 		MissionID: id,
-		Kind:      "mission",
 		Lane:      "normal",
 		Outcome:   OutcomeResult{Outcome: "failed", FailReason: "segfault", FailMessage: msg, ExitCode: -1, Signal: "SEGV"},
 		Cfg:       FinalizeConfig{DataDir: dataDir},
@@ -727,7 +725,7 @@ func TestFinalizeFinishedLogIncludesFailure(t *testing.T) {
 	if rec["signal"] != "SEGV" {
 		t.Errorf("signal=%v, want SEGV", rec["signal"])
 	}
-	want := []string{"time", "level", "msg", "phase", "mission_id", "kind", "lane", "outcome", "duration_ms", "fail_reason", "fail_message", "exit_code", "signal"}
+	want := []string{"time", "level", "msg", "phase", "mission_id", "lane", "outcome", "duration_ms", "fail_reason", "fail_message", "exit_code", "signal"}
 	if strings.Join(keys, ",") != strings.Join(want, ",") {
 		t.Errorf("keys=%v\nwant %v", keys, want)
 	}
@@ -809,7 +807,6 @@ func TestFinalizeSetsOutputStagingTTLPerPolicy(t *testing.T) {
 	}
 	if err := Finalize(context.Background(), db, FinalizeInputs{
 		MissionID: id,
-		Kind:      string(storage.KindMission),
 		Lane:      "normal",
 		Outcome:   OutcomeResult{Outcome: "success", ExitCode: 0},
 		Outputs:   []CollectedOutput{co},
@@ -819,8 +816,6 @@ func TestFinalizeSetsOutputStagingTTLPerPolicy(t *testing.T) {
 			TTL: storage.TTLPolicy{
 				MissionSuccess: successTTL,
 				MissionFailed:  7 * 24 * time.Hour,
-				ExecSuccess:    time.Hour,
-				ExecFailed:     24 * time.Hour,
 				StagingTTL:     time.Hour,
 				DownloadGrace:  time.Hour,
 			},
@@ -838,74 +833,6 @@ func TestFinalizeSetsOutputStagingTTLPerPolicy(t *testing.T) {
 	const skewMs = 5_000
 	if sf.TimeExpiresMs < wantMs-skewMs || sf.TimeExpiresMs > wantMs+skewMs {
 		t.Errorf("time_expires=%d (delta=%dms from policy window @ %d) — looks like the 24h hardcode",
-			sf.TimeExpiresMs, sf.TimeExpiresMs-wantMs, wantMs)
-	}
-}
-
-// TestFinalizeSetsExecOutputStagingTTLPerPolicy: the recalc landed only on
-// the mission path. runExec passed an empty TTLPolicy and the
-// commitFinalize gate keyed on cfg.TTL.MissionSuccess>0, so exec output staging
-// kept the 24h sentinel even when exec_success_ttl was larger. Here
-// MissionSuccess=0 but ExecSuccess=48h: a kind='exec' success commit must land
-// the staging time_expires in the exec policy window, not at 24h.
-func TestFinalizeSetsExecOutputStagingTTLPerPolicy(t *testing.T) {
-	id, dataDir, db := finalizeFixture(t)
-	// Flip the seeded row to kind='exec' so RecalcStagingTTL picks ExecSuccess.
-	if _, err := db.ExecContext(context.Background(),
-		`UPDATE missions SET kind='exec' WHERE mission_id=?`, id); err != nil {
-		t.Fatalf("set kind=exec: %v", err)
-	}
-
-	stagingID := ids.NewUUIDv7()
-	shard, _ := ids.ShardPath(stagingID)
-	stagingDir := filepath.Join(dataDir, "staging", shard)
-	if err := os.MkdirAll(stagingDir, 0o755); err != nil {
-		t.Fatalf("mkdir staging: %v", err)
-	}
-	tmpPath := filepath.Join(stagingDir, stagingID+".tmp")
-	finalPath := filepath.Join(stagingDir, stagingID)
-	if err := os.WriteFile(tmpPath, []byte("payload"), 0o644); err != nil {
-		t.Fatalf("write tmp: %v", err)
-	}
-
-	execSuccessTTL := 48 * time.Hour
-	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
-
-	co := CollectedOutput{
-		Role: "png", StagingID: stagingID,
-		TmpPath: tmpPath, FinalPath: finalPath,
-		Sha256: "deadbeef", Size: 7,
-	}
-	if err := Finalize(context.Background(), db, FinalizeInputs{
-		MissionID: id,
-		Kind:      string(storage.KindExec),
-		Lane:      "normal",
-		Outcome:   OutcomeResult{Outcome: "success", ExitCode: 0},
-		Outputs:   []CollectedOutput{co},
-		Now:       func() time.Time { return now },
-		Cfg: FinalizeConfig{
-			DataDir: dataDir,
-			TTL: storage.TTLPolicy{
-				MissionSuccess: 0, // exercises the gate bug: mission TTL unset
-				MissionFailed:  0,
-				ExecSuccess:    execSuccessTTL,
-				ExecFailed:     24 * time.Hour,
-				StagingTTL:     time.Hour,
-				DownloadGrace:  time.Hour,
-			},
-		},
-	}); err != nil {
-		t.Fatalf("Finalize: %v", err)
-	}
-
-	sf, err := storage.GetStaging(context.Background(), db, stagingID)
-	if err != nil {
-		t.Fatalf("get staging: %v", err)
-	}
-	wantMs := now.Add(execSuccessTTL).UnixMilli()
-	const skewMs = 5_000
-	if sf.TimeExpiresMs < wantMs-skewMs || sf.TimeExpiresMs > wantMs+skewMs {
-		t.Errorf("exec output time_expires=%d (delta=%dms from exec policy window @ %d) — 24h hardcode / gate skip",
 			sf.TimeExpiresMs, sf.TimeExpiresMs-wantMs, wantMs)
 	}
 }
@@ -1114,14 +1041,13 @@ func TestFinalizeDoneEventSpecShape(t *testing.T) {
 }
 
 // TestFinalizeObservesMissionDoneMetric verifies that a successful Finalize
-// call increments letts_missions_total{kind,lane,outcome} via the Prometheus
+// call increments letts_missions_total{lane,outcome} via the Prometheus
 // observer wired in commitFinalize.
 func TestFinalizeObservesMissionDoneMetric(t *testing.T) {
 	id, dataDir, db := finalizeFixture(t)
 	const startMs = 1_000_000
 	in := FinalizeInputs{
 		MissionID:     id,
-		Kind:          "mission",
 		Lane:          "normal",
 		Outcome:       OutcomeResult{Outcome: "success", ExitCode: 0},
 		Cfg:           FinalizeConfig{DataDir: dataDir},
@@ -1130,13 +1056,13 @@ func TestFinalizeObservesMissionDoneMetric(t *testing.T) {
 	}
 
 	before := readCounter(t, "letts_missions_total", map[string]string{
-		"kind": "mission", "lane": "normal", "outcome": "success",
+		"lane": "normal", "outcome": "success",
 	})
 	if err := Finalize(context.Background(), db, in); err != nil {
 		t.Fatalf("Finalize: %v", err)
 	}
 	after := readCounter(t, "letts_missions_total", map[string]string{
-		"kind": "mission", "lane": "normal", "outcome": "success",
+		"lane": "normal", "outcome": "success",
 	})
 	if got := after - before; got != 1 {
 		t.Fatalf("missions_total delta = %v, want 1", got)

@@ -18,7 +18,6 @@ type EnvInputs struct {
 // BaseVars carries per-mission identity used for env composition.
 type BaseVars struct {
 	MissionID string
-	Kind      string
 	Lane      string
 	Workdir   string
 }
@@ -30,8 +29,8 @@ type BaseVars struct {
 // per-mission identity fields. lookup resolves environment variable values
 // for Inherit and Set expansion; pass os.LookupEnv in production.
 //
-// Always emits: PATH, HOME, TZ, LETTS_MISSION_ID, LETTS_KIND, LETTS_LANE,
-// LETTS_WORKDIR, LETTS_TMPDIR.
+// Always emits: PATH, HOME, TZ, LETTS_MISSION_ID, LETTS_LANE, LETTS_WORKDIR,
+// LETTS_TMPDIR.
 // Per input: LETTS_IN_<role>, LETTS_IN_<role>__SHA256, LETTS_IN_<role>__SIZE.
 // Inherit: passes through non-LETTS_ variables listed in cfg.Inherit.
 // Set: applies ${ENV} expansion; rejects LETTS_* keys.
@@ -47,7 +46,6 @@ func BuildEnv(
 		"HOME=" + dugdaleHome,
 		"TZ=UTC",
 		"LETTS_MISSION_ID=" + vars.MissionID,
-		"LETTS_KIND=" + vars.Kind,
 		"LETTS_LANE=" + vars.Lane,
 		"LETTS_WORKDIR=" + vars.Workdir,
 		"LETTS_TMPDIR=" + vars.Workdir + "/tmp",

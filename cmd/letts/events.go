@@ -45,10 +45,11 @@ func runEvents(cmd *cobra.Command, ac *appCtx, missionID, host string, follow bo
 	if host == "" {
 		return NewBadUsageError("--host is required for events (by-id fan-out not implemented)")
 	}
-	_, err := callWithKindScopes(ac, host, readScopesMission, func(c *lettsclient.Client) (struct{}, error) {
-		return struct{}{}, streamEventsToStdout(cmd.Context(), c, missionID, follow, from, cmd.OutOrStdout())
-	})
-	return err
+	c, err := clientForFirstAvailableScope(ac, host, dispatchOrAdmin)
+	if err != nil {
+		return err
+	}
+	return streamEventsToStdout(cmd.Context(), c, missionID, follow, from, cmd.OutOrStdout())
 }
 
 // streamEventsToStdout writes each Event from the stream as one NDJSON line.

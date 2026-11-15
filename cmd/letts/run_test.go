@@ -560,3 +560,52 @@ func TestRunJSONLogsTeesBothTailsSafely(t *testing.T) {
 		t.Errorf("stdout logs missing: %q", stdout)
 	}
 }
+
+// TestComputeWaitDeadlineDefaultFromTimeout: when --wait-timeout is unset but
+// --timeout is "5m", the effective deadline is now + 5m + 30s.
+func TestComputeWaitDeadlineDefaultFromTimeout(t *testing.T) {
+	now := time.Now()
+	d, err := computeWaitDeadline("", "5m", now)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	delta := d.Sub(now)
+	if delta < 5*time.Minute+25*time.Second || delta > 5*time.Minute+35*time.Second {
+		t.Errorf("delta=%v, want ~5m30s", delta)
+	}
+}
+
+// TestComputeWaitDeadlineInfiniteByDefault: neither flag set → infinite (zero time.Time).
+func TestComputeWaitDeadlineInfiniteByDefault(t *testing.T) {
+	d, err := computeWaitDeadline("", "", time.Now())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !d.IsZero() {
+		t.Errorf("deadline=%v, want zero (infinite)", d)
+	}
+}
+
+// TestComputeWaitDeadlineExplicitZeroIsInfinite: --wait-timeout=0 → infinite
+// even when --timeout is set.
+func TestComputeWaitDeadlineExplicitZeroIsInfinite(t *testing.T) {
+	d, err := computeWaitDeadline("0", "5m", time.Now())
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !d.IsZero() {
+		t.Errorf("deadline=%v, want zero", d)
+	}
+}
+
+func TestComputeWaitDeadlineZeroAndNegative(t *testing.T) {
+	for _, v := range []string{"0s", "0m", "0h"} {
+		if d, err := computeWaitDeadline(v, "5m", time.Now()); err != nil || !d.IsZero() {
+			t.Errorf("%s: deadline=%v err=%v, want infinite", v, d, err)
+		}
+	}
+	var bu *BadUsageError
+	if _, err := computeWaitDeadline("-5s", "", time.Now()); !errors.As(err, &bu) {
+		t.Errorf("-5s: err=%v, want BadUsage", err)
+	}
+}

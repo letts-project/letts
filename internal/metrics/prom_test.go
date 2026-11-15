@@ -13,9 +13,9 @@ import (
 
 func TestObserveMissionDoneIncrementsCounter(t *testing.T) {
 	resetLaneAllowlist()
-	before := testutil.ToFloat64(missionsTotal.WithLabelValues("mission", "normal", "success"))
-	ObserveMissionDone("mission", "normal", "success", 250*time.Millisecond)
-	after := testutil.ToFloat64(missionsTotal.WithLabelValues("mission", "normal", "success"))
+	before := testutil.ToFloat64(missionsTotal.WithLabelValues("normal", "success"))
+	ObserveMissionDone("normal", "success", 250*time.Millisecond)
+	after := testutil.ToFloat64(missionsTotal.WithLabelValues("normal", "success"))
 	if after-before != 1 {
 		t.Errorf("delta=%v, want 1", after-before)
 	}
@@ -24,7 +24,7 @@ func TestObserveMissionDoneIncrementsCounter(t *testing.T) {
 func TestObserveMissionDoneRecordsHistogram(t *testing.T) {
 	resetLaneAllowlist()
 	before := testutil.CollectAndCount(missionDuration)
-	ObserveMissionDone("exec", "normal", "failed", 100*time.Millisecond)
+	ObserveMissionDone("normal", "failed", 100*time.Millisecond)
 	after := testutil.CollectAndCount(missionDuration)
 	if after < before {
 		t.Errorf("histogram count regressed: before=%d after=%d", before, after)
@@ -195,7 +195,7 @@ func TestCollectorsRegistered(t *testing.T) {
 	SetInfo("test", "abc")
 	SetLaneCounts("normal", 1, 0, 1, false)
 	SetStorageBytes("db", 1)
-	ObserveMissionDone("mission", "normal", "success", time.Millisecond)
+	ObserveMissionDone("normal", "success", time.Millisecond)
 	ObserveHTTP("/v1/dispatch", "POST", 200, time.Millisecond)
 	IncAdminAuthFailure()
 

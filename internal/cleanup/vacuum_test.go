@@ -58,7 +58,6 @@ func TestVacuumRunOnceTruncatesWAL(t *testing.T) {
 		mid := "0192aaaa-0000-7000-8000-" + leftPadHex(int64(i), 12)
 		if err := storage.InsertMission(ctx, db, &storage.Mission{
 			ID:               mid,
-			Kind:             storage.KindMission,
 			Lane:             "normal",
 			MissionName:      "WALFixture",
 			Status:           storage.StatusQueued,
@@ -110,7 +109,7 @@ func buildFreelistDB(t *testing.T) *sql.DB {
 	for i := 0; i < 300; i++ {
 		mid := "0192bbbb-0000-7000-8000-" + leftPadHex(int64(i), 12)
 		if err := storage.InsertMission(ctx, db, &storage.Mission{
-			ID: mid, Kind: storage.KindMission, Lane: "normal", MissionName: "VacFixture",
+			ID: mid, Lane: "normal", MissionName: "VacFixture",
 			Status: storage.StatusQueued, Input: []byte(`{"pad":"` + strings.Repeat("ab", 256) + `"}`),
 			InputFingerprint: "fp-" + mid, TimeCreatedMs: int64(1_700_000_000_000 + i),
 		}); err != nil {

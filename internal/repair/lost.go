@@ -31,7 +31,7 @@ func SweepRunningToLost(ctx context.Context, cfg *config.DugdaleConfig, db *sql.
 	// repair (criticalerr tripped). Re-attacking it here would collide on the
 	// intent PK and emit a misleading "finalize-as-lost failed" warning; making
 	// the ordering invariant explicit is cleaner than relying on that collision.
-	rows, err := db.QueryContext(ctx, `SELECT mission_id, kind, lane, pid, pgid, proc_starttime, time_started
+	rows, err := db.QueryContext(ctx, `SELECT mission_id, lane, pid, pgid, proc_starttime, time_started
 		FROM missions
 		WHERE status='running'
 		  AND NOT EXISTS (
@@ -42,7 +42,6 @@ func SweepRunningToLost(ctx context.Context, cfg *config.DugdaleConfig, db *sql.
 	}
 	type lostRow struct {
 		ID            string
-		Kind          string
 		Lane          string
 		PID, PGID     sql.NullInt64
 		ProcStarttime sql.NullInt64
@@ -51,7 +50,7 @@ func SweepRunningToLost(ctx context.Context, cfg *config.DugdaleConfig, db *sql.
 	var pending []lostRow
 	for rows.Next() {
 		var r lostRow
-		if err := rows.Scan(&r.ID, &r.Kind, &r.Lane, &r.PID, &r.PGID, &r.ProcStarttime, &r.TimeStartedMs); err != nil {
+		if err := rows.Scan(&r.ID, &r.Lane, &r.PID, &r.PGID, &r.ProcStarttime, &r.TimeStartedMs); err != nil {
 			_ = rows.Close()
 			return err
 		}
@@ -100,7 +99,6 @@ func SweepRunningToLost(ctx context.Context, cfg *config.DugdaleConfig, db *sql.
 		o := mission.OutcomeResult{Outcome: "lost", FailMessage: msg, ExitCode: 0}
 		if err := mission.Finalize(ctx, db, mission.FinalizeInputs{
 			MissionID:     r.ID,
-			Kind:          r.Kind,
 			Lane:          r.Lane,
 			Outcome:       o,
 			Cfg:           finCfg,

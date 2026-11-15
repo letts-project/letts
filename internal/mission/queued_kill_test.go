@@ -26,7 +26,6 @@ func TestKillQueuedMessages(t *testing.T) {
 			dataDir := t.TempDir()
 			m := &storage.Mission{
 				ID:               ids.NewUUIDv7(),
-				Kind:             storage.KindMission,
 				Lane:             "reaped",
 				MissionName:      "Queued",
 				Status:           storage.StatusQueued,

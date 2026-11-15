@@ -16,7 +16,6 @@ import (
 	"letts/internal/ids"
 	"letts/internal/mission"
 	"letts/internal/server/handlers"
-	"letts/internal/server/middleware"
 	"letts/internal/storage"
 )
 
@@ -55,7 +54,6 @@ func setupKillFixture(t *testing.T, status storage.Status) (*handlers.LifecycleH
 
 	m := storage.Mission{
 		ID:               id,
-		Kind:             storage.KindMission,
 		Lane:             "normal",
 		MissionName:      "KillFixture",
 		Status:           status,
@@ -100,12 +98,6 @@ func setupKillFixture(t *testing.T, status storage.Status) (*handlers.LifecycleH
 func doKill(h *handlers.LifecycleHandler, id string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest("POST", "/v1/missions/"+id+"/kill", nil)
 	r.SetPathValue("id", id)
-	// Admin identity matches production wiring (all kill routes are
-	// admin-only). Required by the kind-vs-scope gate.
-	ctx := context.WithValue(r.Context(),
-		middleware.IdentityCtxKey(),
-		middleware.Identity{Scope: middleware.ScopeAdmin})
-	r = r.WithContext(ctx)
 	w := httptest.NewRecorder()
 	h.Kill(w, r)
 	return w

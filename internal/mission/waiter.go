@@ -33,13 +33,6 @@ import (
 func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.Mission, killCh <-chan ExternalKillReason, release func()) error {
 	defer release()
 
-	// Exec missions take a completely different runtime path: no fd3, no
-	// mission_runtime row, env per the exec env contract, declared-output
-	// collection. runExec handles its own finalize.
-	if m.Kind == storage.KindExec {
-		return runExec(ctx, cfg, db, m, killCh)
-	}
-
 	rt, err := storage.GetRuntime(ctx, db, m.ID)
 	if err != nil {
 		return finalizeCrashed(ctx, cfg, db, m, "spawn_failed", "get runtime: "+err.Error())
@@ -99,7 +92,7 @@ func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.
 	}
 	dugdaleHome, _ := os.UserHomeDir()
 	env, err := BuildEnv(dugdaleHome, cfg.MissionEnv, envInputs, BaseVars{
-		MissionID: m.ID, Kind: string(m.Kind), Lane: m.Lane, Workdir: workdir,
+		MissionID: m.ID, Lane: m.Lane, Workdir: workdir,
 	}, os.LookupEnv)
 	if err != nil {
 		return finalizeCrashed(ctx, cfg, db, m, "spawn_failed", "env: "+err.Error())
@@ -160,7 +153,7 @@ func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.
 	// Structured INFO line for log-only observers (separate from the
 	// events file consumers).
 	slog.Default().Info("mission", "phase", "started",
-		"mission_id", m.ID, "kind", string(m.Kind), "lane", m.Lane, "pid", pid)
+		"mission_id", m.ID, "lane", m.Lane, "pid", pid)
 
 	// Reader/writer goroutines start immediately so the fd3 pipe never blocks.
 	// Channel capacity sized from cfg.Limits.ProgressBufferSize ("256 KiB
@@ -311,7 +304,7 @@ func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.
 	finalKill := killReason
 	killMu.Unlock()
 
-	exitCode, sig, stateOK := extractExecResult(res.Cmd.ProcessState)
+	exitCode, sig, stateOK := processResult(res.Cmd.ProcessState)
 	signalName := ""
 	if sig != 0 {
 		signalName = sigName(sig)
@@ -319,8 +312,8 @@ func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.
 
 	var o OutcomeResult
 	if !stateOK && finalKill == "" {
-		// cmd.Wait returned without populating ProcessState — symmetric
-		// with the exec path's fix. exit=-1 is sentinel, not real.
+		// cmd.Wait returned without populating ProcessState; exit=-1 is a
+		// sentinel, not a real exit code.
 		o = OutcomeResult{
 			Outcome:     "crashed",
 			FailReason:  "no_process_state",
@@ -374,7 +367,6 @@ func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.
 	// in the done event matches GET /v1/missions/{id}.duration_ms exactly.
 	return Finalize(context.WithoutCancel(ctx), db, FinalizeInputs{
 		MissionID:       m.ID,
-		Kind:            string(m.Kind),
 		Lane:            m.Lane,
 		Outcome:         o,
 		Outputs:         collected,
@@ -385,24 +377,33 @@ func Run(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB, m *storage.
 			MaxReturnValue: cfg.Limits.MaxReturnValueSize,
 			MaxFailMessage: cfg.Limits.MaxFailMessageSize,
 			MaxFailDetails: cfg.Limits.MaxFailDetailsSize,
-			TTL:            TTLPolicyFromConfig(cfg),
+			TTL:            ttlPolicyFromConfig(cfg),
 		},
 	})
 }
 
-// TTLPolicyFromConfig builds the staging retention policy from dugdale config.
-// Shared by the mission waiter and the exec runtime so output-staging TTL
-// recalc can't silently diverge between paths (an empty policy on the
-// exec path would leave exec outputs on the 24h sentinel).
-func TTLPolicyFromConfig(cfg *config.DugdaleConfig) storage.TTLPolicy {
+// ttlPolicyFromConfig builds the staging retention policy from dugdale config.
+func ttlPolicyFromConfig(cfg *config.DugdaleConfig) storage.TTLPolicy {
 	return storage.TTLPolicy{
 		MissionSuccess: cfg.Cleanup.SuccessTTL,
 		MissionFailed:  cfg.Cleanup.FailedTTL,
-		ExecSuccess:    cfg.Exec.ExecSuccessTTL,
-		ExecFailed:     cfg.Exec.ExecFailedTTL,
 		StagingTTL:     cfg.Cleanup.StagingTTL,
 		DownloadGrace:  cfg.Cleanup.DownloadedGrace,
 	}
+}
+
+// processResult pulls the (exitCode, signal) pair out of a finished cmd's
+// ProcessState. Returns ok=false when ProcessState is nil — callers must
+// not treat the returned exitCode=-1 as a legitimate exit.
+func processResult(ps *os.ProcessState) (exitCode int, sig syscall.Signal, ok bool) {
+	if ps == nil {
+		return -1, 0, false
+	}
+	exitCode = ps.ExitCode()
+	if ws, wsOK := ps.Sys().(syscall.WaitStatus); wsOK && ws.Signaled() {
+		sig = ws.Signal()
+	}
+	return exitCode, sig, true
 }
 
 func killProcessGroup(pgid int, sig syscall.Signal) {
@@ -440,7 +441,7 @@ func mapCollectErrorToReason(err error) string {
 // crashedReasonFromOS returns "disk_quota_exceeded" if err wraps ENOSPC,
 // otherwise the provided fallback (typically "spawn_failed" or
 // "input_materialization_failed"). Used by the crashed-outcome callsites
-// in Run / runExec where the underlying os.* failure may be a disk-full
+// in Run where the underlying os.* failure may be a disk-full
 // condition called out by name.
 func crashedReasonFromOS(err error, fallback string) string {
 	if errors.Is(err, syscall.ENOSPC) {
@@ -470,7 +471,6 @@ func finalizeCrashed(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB,
 	o := OutcomeResult{Outcome: "crashed", FailReason: reason, FailMessage: msg, ExitCode: 0}
 	if err := Finalize(context.WithoutCancel(ctx), db, FinalizeInputs{
 		MissionID: m.ID,
-		Kind:      string(m.Kind),
 		Lane:      m.Lane,
 		Outcome:   o,
 		// TimeStartedMs intentionally 0 — finalizeCrashed runs before a
@@ -481,14 +481,7 @@ func finalizeCrashed(ctx context.Context, cfg *config.DugdaleConfig, db *sql.DB,
 			MaxReturnValue: cfg.Limits.MaxReturnValueSize,
 			MaxFailMessage: cfg.Limits.MaxFailMessageSize,
 			MaxFailDetails: cfg.Limits.MaxFailDetailsSize,
-			TTL: storage.TTLPolicy{
-				MissionSuccess: cfg.Cleanup.SuccessTTL,
-				MissionFailed:  cfg.Cleanup.FailedTTL,
-				ExecSuccess:    cfg.Exec.ExecSuccessTTL,
-				ExecFailed:     cfg.Exec.ExecFailedTTL,
-				StagingTTL:     cfg.Cleanup.StagingTTL,
-				DownloadGrace:  cfg.Cleanup.DownloadedGrace,
-			},
+			TTL:            ttlPolicyFromConfig(cfg),
 		},
 	}); err != nil {
 		return fmt.Errorf("finalize crashed: %w (orig: %s)", err, msg)

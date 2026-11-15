@@ -18,7 +18,7 @@ import (
 //
 // DiskUsage is a runtime callback wired by cmd/dugdale once the disk-usage
 // monitor goroutine is running. Anything that needs to gate work on the
-// max_data_dir_size soft cap consults this — the dispatch/exec/staging
+// max_data_dir_size soft cap consults this — the dispatch/staging
 // handlers and output collection during mission Finalize.
 // Tests can leave it nil; production wiring sets it to the monitor's
 // cached Size().
@@ -32,7 +32,10 @@ type DugdaleConfig struct {
 	Cleanup    CleanupConfig    `yaml:"cleanup"`
 	Limits     LimitsConfig     `yaml:"limits"`
 	MissionEnv MissionEnvConfig `yaml:"mission_env"`
-	Exec       ExecConfig       `yaml:"exec"`
+
+	// RemovedExec accepts the `exec:` section that configs written for
+	// earlier releases still carry; it is rejected if it enables anything.
+	RemovedExec yaml.Node `yaml:"exec"`
 
 	DiskUsage func() int64 `yaml:"-"`
 }
@@ -92,7 +95,6 @@ type LimitsConfig struct {
 	MaxFailDetailsSize  int64 `yaml:"-"`
 	MaxDispatchBodySize int64 `yaml:"-"`
 	MaxMissionInputSize int64 `yaml:"-"`
-	MaxExecBodySize     int64 `yaml:"-"`
 	MaxApplyBodySize    int64 `yaml:"-"`
 	// MaxProgressRate / MaxOutputFilesPerMsn use *int raw fields below
 	// so an explicit `0` in YAML survives applyDefaults as
@@ -121,7 +123,6 @@ type LimitsConfig struct {
 	MaxFailDetailsSizeRaw string `yaml:"max_fail_details_size"`
 	MaxDispatchBodyRaw    string `yaml:"max_dispatch_body_size"`
 	MaxMissionInputRaw    string `yaml:"max_mission_input_size"`
-	MaxExecBodyRaw        string `yaml:"max_exec_body_size"`
 	MaxApplyBodyRaw       string `yaml:"max_apply_body_size"`
 	ProgressBufferRaw     string `yaml:"progress_buffer_size"`
 	MaxOutputFileSizeRaw  string `yaml:"max_output_file_size"`
@@ -146,26 +147,6 @@ type LimitsConfig struct {
 type MissionEnvConfig struct {
 	Inherit []string          `yaml:"inherit"`
 	Set     map[string]string `yaml:"set"`
-}
-
-// ExecConfig holds exec feature settings (opt-in).
-type ExecConfig struct {
-	Enabled    bool     `yaml:"enabled"`
-	Tokens     []string `yaml:"tokens"`
-	AllowShell bool     `yaml:"allow_shell"`
-	// MaxInputsPerExec / MaxOutputsPerExec use *int raw fields
-	// so an explicit YAML `0` survives applyDefaults as "no cap".
-	MaxScriptSize     int64         `yaml:"-"`
-	MaxInputsPerExec  int           `yaml:"-"`
-	MaxOutputsPerExec int           `yaml:"-"`
-	ExecSuccessTTL    time.Duration `yaml:"-"`
-	ExecFailedTTL     time.Duration `yaml:"-"`
-
-	MaxScriptSizeRaw     string `yaml:"max_script_size"`
-	MaxInputsPerExecRaw  *int   `yaml:"max_inputs_per_exec"`
-	MaxOutputsPerExecRaw *int   `yaml:"max_outputs_per_exec"`
-	ExecSuccessTTLRaw    string `yaml:"exec_success_ttl"`
-	ExecFailedTTLRaw     string `yaml:"exec_failed_ttl"`
 }
 
 // LoadDugdaleFile reads and parses dugdale.yaml from a file path.
@@ -210,7 +191,7 @@ func validateDugdale(c *DugdaleConfig) error {
 	if err := validateMissionEnv(&c.MissionEnv); err != nil {
 		return err
 	}
-	if err := validateExecAuthReachable(c); err != nil {
+	if err := validateRemovedExec(c); err != nil {
 		return err
 	}
 	if err := validateLogConfig(c); err != nil {
@@ -222,26 +203,20 @@ func validateDugdale(c *DugdaleConfig) error {
 	return nil
 }
 
-// validateExecAuthReachable enforces: when exec is opt-in
-// (Exec.Enabled=true) the operator must provide some way to authenticate
-// against the endpoint. With no exec.tokens AND no admin.tokens, every request
-// hits the auth middleware and 401s — the only effect of `enabled: true` is to
-// reserve memory for handlers. Refuse to start so the misconfiguration is loud.
-//
-// We accept (a) non-empty exec.tokens, or (b) non-empty admin.tokens (admin
-// scope supersets exec via AuthEither).
-func validateExecAuthReachable(c *DugdaleConfig) error {
-	if !c.Exec.Enabled {
+func validateRemovedExec(c *DugdaleConfig) error {
+	if c.RemovedExec.Kind == 0 {
 		return nil
 	}
-	if len(c.Exec.Tokens) > 0 {
-		return nil
+	var legacy struct {
+		Enabled bool `yaml:"enabled"`
 	}
-	if len(c.Admin.Tokens) > 0 {
-		return nil
+	if err := c.RemovedExec.Decode(&legacy); err != nil {
+		return fmt.Errorf("parse dugdale config: exec: %w", err)
 	}
-	return errors.New("refuse to start: exec.enabled=true but no usable auth path " +
-		"(set at least one of: exec.tokens, admin.tokens)")
+	if legacy.Enabled {
+		return errors.New("refuse to start: exec.enabled=true, but dugdale no longer supports exec; remove the exec section")
+	}
+	return nil
 }
 
 // validateLogConfig rejects invalid log.level / log.format enums at config
@@ -287,8 +262,8 @@ func validateEventLineHeadroom(c *DugdaleConfig) error {
 }
 
 // validateMissionEnv enforces: LETTS_* is a reserved namespace
-// for the daemon's own variables (LETTS_MISSION_ID, LETTS_KIND,
-// LETTS_LANE, LETTS_WORKDIR, LETTS_IN_<role>, ...). Operators must not
+// for the daemon's own variables (LETTS_MISSION_ID, LETTS_LANE,
+// LETTS_WORKDIR, LETTS_IN_<role>, ...). Operators must not
 // shadow these via mission_env.set, and must not silently sneak host
 // LETTS_* values through mission_env.inherit. Detection at config load
 // gives clear feedback; the previous "set" check happened at every
@@ -314,8 +289,7 @@ func validateMissionEnv(m *MissionEnvConfig) error {
 //     proxy fronts the listener), or
 //   - set insecure_plain_http=true (loud dev/lab escape hatch).
 //
-// Otherwise we refuse to start. exec-scope tokens are particularly dangerous
-// (RCE capability) so they trip the guard the same way as auth/admin.
+// Otherwise we refuse to start.
 func validateTLSGuard(c *DugdaleConfig) error {
 	if isLoopbackListen(c.Listen) {
 		return nil
@@ -333,9 +307,6 @@ func validateTLSGuard(c *DugdaleConfig) error {
 	}
 	if len(c.Admin.Tokens) > 0 {
 		active = append(active, "admin")
-	}
-	if c.Exec.Enabled && len(c.Exec.Tokens) > 0 {
-		active = append(active, "exec")
 	}
 	if len(active) == 0 {
 		return nil
@@ -388,8 +359,6 @@ func applyDefaults(c *DugdaleConfig) error {
 		{c.Limits.UploadIdleTimeoutRaw, &c.Limits.UploadIdleTimeout, 30 * time.Second},
 		{c.Limits.DefaultKillGraceRaw, &c.Limits.DefaultKillGrace, 5 * time.Second},
 		{c.Limits.ReaderPostExitGraceRaw, &c.Limits.ReaderPostExitGrace, 5 * time.Second},
-		{c.Exec.ExecSuccessTTLRaw, &c.Exec.ExecSuccessTTL, 1 * time.Hour},
-		{c.Exec.ExecFailedTTLRaw, &c.Exec.ExecFailedTTL, 24 * time.Hour},
 	}
 	for _, f := range durFields {
 		v, err := parseDurationOr(f.raw, f.def)
@@ -413,14 +382,12 @@ func applyDefaults(c *DugdaleConfig) error {
 		{c.Limits.MaxFailDetailsSizeRaw, &c.Limits.MaxFailDetailsSize, 256 * 1024},
 		{c.Limits.MaxDispatchBodyRaw, &c.Limits.MaxDispatchBodySize, 2 * 1024 * 1024},
 		{c.Limits.MaxMissionInputRaw, &c.Limits.MaxMissionInputSize, 1024 * 1024},
-		{c.Limits.MaxExecBodyRaw, &c.Limits.MaxExecBodySize, 1024 * 1024},
 		{c.Limits.MaxApplyBodyRaw, &c.Limits.MaxApplyBodySize, 1024 * 1024},
 		{c.Limits.ProgressBufferRaw, &c.Limits.ProgressBufferSize, 256 * 1024},
 		{c.Limits.MaxOutputFileSizeRaw, &c.Limits.MaxOutputFileSize, 0},
 		{c.Limits.MaxStagingUploadRaw, &c.Limits.MaxStagingUploadSize, 0},
 		{c.Limits.MaxIncompleteBytesRaw, &c.Limits.MaxIncompleteBytes, 0},
 		{c.Limits.MaxDataDirRaw, &c.Limits.MaxDataDirSize, 0},
-		{c.Exec.MaxScriptSizeRaw, &c.Exec.MaxScriptSize, 256 * 1024},
 	}
 	for _, f := range byteFields {
 		v, err := parseBytesOr(f.raw, f.def)
@@ -451,16 +418,6 @@ func applyDefaults(c *DugdaleConfig) error {
 	}
 	if c.Limits.CacheSize == 0 {
 		c.Limits.CacheSize = -16000
-	}
-	if c.Exec.MaxInputsPerExecRaw == nil {
-		c.Exec.MaxInputsPerExec = 32
-	} else {
-		c.Exec.MaxInputsPerExec = *c.Exec.MaxInputsPerExecRaw
-	}
-	if c.Exec.MaxOutputsPerExecRaw == nil {
-		c.Exec.MaxOutputsPerExec = 32
-	} else {
-		c.Exec.MaxOutputsPerExec = *c.Exec.MaxOutputsPerExecRaw
 	}
 
 	if c.Log.Level == "" {

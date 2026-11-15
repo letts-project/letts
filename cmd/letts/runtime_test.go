@@ -39,7 +39,7 @@ func TestBaseURLForStripsExistingPortFromHost(t *testing.T) {
 }
 
 // TestClientForHostResolvesAlias: ctl/events/logs/staging must
-// accept --host=<alias> like dispatch/run/exec do. ClientForHost("local") must
+// accept --host=<alias> like dispatch/run do. ClientForHost("local") must
 // resolve the alias to the real dugdale id before the URL and token lookup.
 func TestClientForHostResolvesAlias(t *testing.T) {
 	srv := httptest.NewServer(nil)

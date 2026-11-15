@@ -148,7 +148,7 @@ func TestSweepRunningToLostLeavesNonRunningAlone(t *testing.T) {
 
 	queuedID := ids.NewUUIDv7()
 	_ = storage.InsertMission(context.Background(), db, &storage.Mission{
-		ID: queuedID, Kind: storage.KindMission, Lane: "n",
+		ID: queuedID, Lane: "n",
 		MissionName: "x", Status: storage.StatusQueued,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: time.Now().UnixMilli(),

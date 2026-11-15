@@ -12,7 +12,7 @@ func TestFinalizeIntentLifecycle(t *testing.T) {
 	id := ids.NewUUIDv7()
 	// Need a missions row first (FK).
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: id, Kind: KindMission, Lane: "x", MissionName: "x", Status: StatusRunning,
+		ID: id, Lane: "x", MissionName: "x", Status: StatusRunning,
 		Input: []byte("{}"), InputFingerprint: "f", TimeCreatedMs: 1,
 	})
 	intent := FinalizeIntent{
@@ -50,7 +50,7 @@ func TestGetFinalizeIntent(t *testing.T) {
 	db := setupDB(t)
 	id := ids.NewUUIDv7()
 	_ = InsertMission(context.Background(), db, &Mission{
-		ID: id, Kind: KindMission, Lane: "x", MissionName: "x", Status: StatusRunning,
+		ID: id, Lane: "x", MissionName: "x", Status: StatusRunning,
 		Input: []byte("{}"), InputFingerprint: "f", TimeCreatedMs: 1,
 	})
 	intent := FinalizeIntent{
@@ -84,7 +84,7 @@ func TestQueryAllFinalizeIntents(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		id := ids.NewUUIDv7()
 		_ = InsertMission(context.Background(), db, &Mission{
-			ID: id, Kind: KindMission, Lane: "x", MissionName: "x", Status: StatusRunning,
+			ID: id, Lane: "x", MissionName: "x", Status: StatusRunning,
 			Input: []byte("{}"), InputFingerprint: "f", TimeCreatedMs: int64(i + 1),
 		})
 		_ = InsertFinalizeIntent(context.Background(), db, &FinalizeIntent{

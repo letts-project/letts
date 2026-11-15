@@ -71,11 +71,8 @@ type stubDugdale struct {
 // through; missing optional fields use Go zero values (omitempty).
 type stubMission struct {
 	MissionID        string                     `json:"mission_id"`
-	Kind             string                     `json:"kind,omitempty"`
 	Lane             string                     `json:"lane,omitempty"`
 	MissionName      string                     `json:"mission_name,omitempty"`
-	DisplayName      string                     `json:"display_name,omitempty"`
-	GroupID          string                     `json:"group_id,omitempty"`
 	Status           string                     `json:"status"`
 	Outcome          string                     `json:"outcome,omitempty"`
 	ExitCode         *int                       `json:"exit_code,omitempty"`
@@ -214,7 +211,6 @@ func newStubDugdale(t *testing.T) *stubDugdale {
 	mux.HandleFunc("HEAD /v1/staging/{id}", s.handleStagingHead)
 	mux.HandleFunc("GET /v1/staging/{id}", s.handleStagingGet)
 	mux.HandleFunc("DELETE /v1/staging/{id}", s.handleStagingDelete)
-	mux.HandleFunc("GET /v1/staging/by-content/{sha}", s.handleStagingByContent)
 	mux.HandleFunc("GET /v1/staging", s.handleStagingList)
 	mux.HandleFunc("GET /v1/healthz", s.handleHealthz)
 	mux.HandleFunc("GET /v1/readyz", s.handleHealthz)
@@ -517,7 +513,6 @@ func (s *stubDugdale) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 	m := &stubMission{
 		MissionID:     missionID,
-		Kind:          "mission",
 		Lane:          req.Lane,
 		MissionName:   req.Mission,
 		Status:        "queued",
@@ -566,7 +561,6 @@ func (s *stubDugdale) handleMissionsList(w http.ResponseWriter, r *http.Request)
 	wantOutcome := q.Get("outcome")
 	wantLane := q.Get("lane")
 	wantMission := q.Get("mission")
-	wantKind := q.Get("kind")
 
 	s.mu.Lock()
 	out := make([]map[string]any, 0, len(s.missions))
@@ -581,9 +575,6 @@ func (s *stubDugdale) handleMissionsList(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		if wantMission != "" && m.MissionName != wantMission {
-			continue
-		}
-		if wantKind != "" && m.Kind != wantKind {
 			continue
 		}
 		out = append(out, stubMissionToMap(m))
@@ -1003,33 +994,6 @@ func (s *stubDugdale) handleStagingList(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"staging": out})
-}
-
-func (s *stubDugdale) handleStagingByContent(w http.ResponseWriter, r *http.Request) {
-	sha := strings.ToLower(r.PathValue("sha"))
-	sizeStr := r.URL.Query().Get("size")
-	if sizeStr == "" {
-		writeStubError(w, http.StatusBadRequest, "bad_request", "size required")
-		return
-	}
-	size, err := strconv.ParseInt(sizeStr, 10, 64)
-	if err != nil || size <= 0 {
-		writeStubError(w, http.StatusBadRequest, "bad_request", "invalid size")
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, sf := range s.staging {
-		if sf.Sha256 == sha && sf.Size == size && sf.State == "complete" {
-			writeJSON(w, http.StatusOK, map[string]any{
-				"staging_id": sf.StagingID,
-				"sha256":     sf.Sha256,
-				"size":       sf.Size,
-			})
-			return
-		}
-	}
-	writeStubError(w, http.StatusNotFound, "not_found", "no match")
 }
 
 // --- health ---

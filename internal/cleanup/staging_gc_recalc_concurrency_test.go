@@ -50,7 +50,6 @@ func TestRecalcStagingTTLConcurrentDrainsConverge(t *testing.T) {
 			StagingTTL:      30 * time.Minute,
 			DownloadedGrace: 1 * time.Hour,
 		},
-		Exec: config.ExecConfig{},
 	}
 	gc := &cleanup.StagingGC{DB: db, Cfg: cfg, DataDir: dir}
 

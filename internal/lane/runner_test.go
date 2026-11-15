@@ -38,7 +38,6 @@ func insertQueued(t *testing.T, db *sql.DB, lane string, n int) []string {
 		ids_[i] = id
 		err := storage.InsertMission(context.Background(), db, &storage.Mission{
 			ID:               id,
-			Kind:             storage.KindMission,
 			Lane:             lane,
 			MissionName:      "test",
 			Status:           storage.StatusQueued,

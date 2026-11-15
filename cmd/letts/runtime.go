@@ -118,7 +118,7 @@ func (a *appCtx) baseURLFor(dugdaleID string) (string, error) {
 // constructing one on first use. Safe for concurrent callers.
 func (a *appCtx) ClientForHost(dugdaleID string, scope lettsconfig.Scope) (*lettsclient.Client, error) {
 	// Resolve aliases (incl. ${VAR}-substituted values) up front so
-	// ctl/events/logs/staging accept --host=<alias> like dispatch/run/exec —
+	// ctl/events/logs/staging accept --host=<alias> like dispatch/run —
 	// both the URL and token lookups below key on the real id. On resolution
 	// failure (e.g. a test-only id present only in BaseURLForID, not Config)
 	// fall back to the raw id and let baseURLFor handle it.

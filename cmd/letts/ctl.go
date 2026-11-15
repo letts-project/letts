@@ -8,6 +8,5 @@ func newCtlCmd() *cobra.Command {
 	c.AddCommand(newCtlLanesCmd())
 	c.AddCommand(newCtlMissionsCmd())
 	c.AddCommand(newCtlStagingCmd())
-	c.AddCommand(newCtlExecCmd())
 	return c
 }

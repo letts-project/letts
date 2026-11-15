@@ -16,7 +16,6 @@ type RefKind string
 const (
 	RefInput  RefKind = "input"
 	RefOutput RefKind = "output"
-	RefScript RefKind = "script"
 )
 
 // StagingRef mirrors a mission_staging_refs row.
@@ -101,15 +100,13 @@ func scanRefs(rows *sql.Rows) ([]StagingRef, error) {
 type TTLPolicy struct {
 	MissionSuccess time.Duration
 	MissionFailed  time.Duration
-	ExecSuccess    time.Duration
-	ExecFailed     time.Duration
 	StagingTTL     time.Duration
 	DownloadGrace  time.Duration
 }
 
 // RecalcStagingTTL applies the TTL formula and stores the new time_expires.
 //   - If any ref'd mission is queued/running/deleting → time_expires = MaxInt64 (infinity)
-//   - Else time_expires = max(time_finished + ttl_for(kind, outcome)) over refs
+//   - Else time_expires = max(time_finished + ttl_for(outcome)) over refs
 //   - If no refs:
 //     if downloaded_at set → min(time_created + staging_ttl, downloaded_at + downloaded_grace)
 //     else → time_created + staging_ttl
@@ -121,7 +118,7 @@ func RecalcStagingTTL(ctx context.Context, db DBOrConn, stagingID string, p TTLP
 		return 0, err
 	}
 
-	rows, err := db.QueryContext(ctx, `SELECT m.kind, m.status, m.outcome, m.time_finished
+	rows, err := db.QueryContext(ctx, `SELECT m.status, m.outcome, m.time_finished
 		FROM mission_staging_refs r
 		JOIN missions m ON m.mission_id = r.mission_id
 		WHERE r.staging_id = ?`, stagingID)
@@ -136,31 +133,19 @@ func RecalcStagingTTL(ctx context.Context, db DBOrConn, stagingID string, p TTLP
 
 	for rows.Next() {
 		hasRefs = true
-		var kind, status string
+		var status string
 		var outcome sql.NullString
 		var finishedMs sql.NullInt64
-		if err := rows.Scan(&kind, &status, &outcome, &finishedMs); err != nil {
+		if err := rows.Scan(&status, &outcome, &finishedMs); err != nil {
 			return 0, err
 		}
 		if status == string(StatusQueued) || status == string(StatusRunning) || status == string(StatusDeleting) {
 			isInfinity = true
 			continue
 		}
-		// done — compute TTL based on kind+outcome
-		var ttl time.Duration
-		isExec := kind == string(KindExec)
+		ttl := p.MissionFailed
 		if outcome.Valid && outcome.String == string(OutcomeSuccess) {
-			if isExec {
-				ttl = p.ExecSuccess
-			} else {
-				ttl = p.MissionSuccess
-			}
-		} else {
-			if isExec {
-				ttl = p.ExecFailed
-			} else {
-				ttl = p.MissionFailed
-			}
+			ttl = p.MissionSuccess
 		}
 		if finishedMs.Valid {
 			exp := finishedMs.Int64 + ttl.Milliseconds()

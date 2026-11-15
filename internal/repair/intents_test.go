@@ -51,9 +51,6 @@ func repairCfg(dataDir string) *config.DugdaleConfig {
 			MaxFailMessageSize: 64 * 1024,
 			MaxFailDetailsSize: 64 * 1024,
 		},
-		Exec: config.ExecConfig{
-			ExecSuccessTTL: time.Hour, ExecFailedTTL: 24 * time.Hour,
-		},
 	}
 }
 
@@ -63,7 +60,7 @@ func repairFixture(t *testing.T, db *sql.DB, dataDir string) (string, string) {
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: "normal",
+		ID: id, Lane: "normal",
 		MissionName: "RepairFixture", Status: storage.StatusRunning,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: time.Now().UnixMilli(),

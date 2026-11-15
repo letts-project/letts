@@ -287,7 +287,7 @@ func TestPendingOutputAlwaysHasIntent(t *testing.T) {
 	stagingA := ids.NewUUIDv7()
 	now := time.Now().UnixMilli()
 	if err := storage.InsertMission(context.Background(), s.DB, &storage.Mission{
-		ID: missionA, Kind: storage.KindMission, Lane: "normal", MissionName: "m",
+		ID: missionA, Lane: "normal", MissionName: "m",
 		Status: storage.StatusRunning, Input: []byte("{}"), InputFingerprint: "fp",
 		TimeCreatedMs: now,
 	}); err != nil {
@@ -430,7 +430,7 @@ func (s *stack) insertMissionWithRuntime(missionDir, missionName string) string 
 	id := ids.NewUUIDv7()
 	now := time.Now().UnixMilli()
 	if err := storage.InsertMission(context.Background(), s.DB, &storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: "normal",
+		ID: id, Lane: "normal",
 		MissionName: missionName, Status: storage.StatusQueued,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: now,
@@ -453,7 +453,7 @@ func (s *stack) insertDoneMission(lane, outcome string) string {
 	id := ids.NewUUIDv7()
 	now := time.Now().UnixMilli()
 	if err := storage.InsertMission(context.Background(), s.DB, &storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: lane,
+		ID: id, Lane: lane,
 		MissionName: "Fixture", Status: storage.StatusDone,
 		Outcome:          nullStr(outcome),
 		Input:            []byte(`{}`),

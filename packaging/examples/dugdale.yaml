@@ -27,6 +27,3 @@ cleanup:
   failed_ttl:     7d
   staging_ttl:    1h
   sweep_interval: 5m
-
-exec:
-  enabled: false             # opt-in remote exec (RCE); leave off unless needed

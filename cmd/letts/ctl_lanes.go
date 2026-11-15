@@ -39,7 +39,7 @@ func newCtlLanesListCmd() *cobra.Command {
 }
 
 func runCtlLanesList(ac *appCtx, w io.Writer, host string, f Format) error {
-	c, err := clientForFirstAvailableScope(ac, host, inspectScopes)
+	c, err := clientForFirstAvailableScope(ac, host, adminOrDispatch)
 	if err != nil {
 		return err
 	}

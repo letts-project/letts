@@ -2,7 +2,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 
@@ -49,24 +48,12 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newEventsCmd())
 	root.AddCommand(newLogsCmd())
 	root.AddCommand(newRunCmd())
-	root.AddCommand(newExecCmd())
 	return root
 }
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
-		if shouldReportErr(err) {
-			fmt.Fprintf(os.Stderr, "letts: %v\n", err)
-		}
+		fmt.Fprintf(os.Stderr, "letts: %v\n", err)
 		os.Exit(mapErrorToExit(err))
 	}
-}
-
-// shouldReportErr reports whether err carries a message worth printing to
-// stderr beyond the exit code itself. *ExecOutcomeError is a typed carrier
-// for the remote exit code, not a letts-side failure — the command's own
-// stderr (already streamed through) explains any non-zero outcome.
-func shouldReportErr(err error) bool {
-	var eoe *ExecOutcomeError
-	return !errors.As(err, &eoe)
 }

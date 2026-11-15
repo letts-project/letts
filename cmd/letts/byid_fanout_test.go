@@ -180,9 +180,9 @@ func TestFanOutByID_matchFilter(t *testing.T) {
 }
 
 // stubByIDAppCtxWithTokens spins up N stub servers and wires them as dugdales
-// with the given (dispatch, admin, exec) tokens — empty string means absent.
+// with the given (dispatch, admin) tokens — empty string means absent.
 func stubByIDAppCtxWithTokens(t *testing.T, stubs []*fanoutByIDStub,
-	dispatchTok, adminTok, execTok string,
+	dispatchTok, adminTok string,
 ) *appCtx {
 	t.Helper()
 	dugs := make([]lettsconfig.Dugdale, 0, len(stubs))
@@ -199,7 +199,7 @@ func stubByIDAppCtxWithTokens(t *testing.T, stubs []*fanoutByIDStub,
 		t.Cleanup(srv.Close)
 		dugs = append(dugs, lettsconfig.Dugdale{
 			ID: st.id, Host: "ignored",
-			Token: dispatchTok, AdminToken: adminTok, ExecToken: execTok,
+			Token: dispatchTok, AdminToken: adminTok,
 			Labels: st.labels,
 		})
 		baseURLs[st.id] = srv.URL
@@ -217,7 +217,7 @@ func stubByIDAppCtxWithTokens(t *testing.T, stubs []*fanoutByIDStub,
 func TestFanOutByID_AdminOnly(t *testing.T) {
 	ac := stubByIDAppCtxWithTokens(t, []*fanoutByIDStub{
 		{id: "a", status: 200, body: `{}`},
-	}, "dtok", "", "")
+	}, "dtok", "")
 	_, _, err := FanOutByID(ac, nil, func(c *lettsclient.Client) (*lettsclient.Mission, error) {
 		return lettsclient.GetMission(c, "mid")
 	})
@@ -461,86 +461,14 @@ func TestFanOutByID_noCandidates(t *testing.T) {
 	}
 }
 
-// kindGateAppCtx wires dugdales whose /output answers 200 only for the tokens
-// in allowed (the daemon's kind gate) and 403 forbidden_kind for any other
-// token, recording every token presented.
-func kindGateAppCtx(t *testing.T, ids []string, allowed map[string]bool, dispatchTok, adminTok, execTok string) (*appCtx, func() []string) {
-	t.Helper()
-	var mu sync.Mutex
-	var seen []string
-	dugs := make([]lettsconfig.Dugdale, 0, len(ids))
-	baseURLs := map[string]string{}
-	for _, id := range ids {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			mu.Lock()
-			seen = append(seen, tok)
-			mu.Unlock()
-			if !allowed[tok] {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusForbidden)
-				_, _ = io.WriteString(w, `{"error":"forbidden_kind","message":"token scope does not permit access to this mission kind"}`)
-				return
-			}
-			_, _ = io.WriteString(w, "payload")
-		}))
-		t.Cleanup(srv.Close)
-		dugs = append(dugs, lettsconfig.Dugdale{ID: id, Host: "ignored", Token: dispatchTok, AdminToken: adminTok, ExecToken: execTok})
-		baseURLs[id] = srv.URL
-	}
-	ac := &appCtx{
-		Config:       &lettsconfig.Config{Dugdales: dugs},
-		Getenv:       func(k string) (string, bool) { return "", false },
-		BaseURLForID: baseURLs,
-		clients:      map[clientKey]*hostClient{},
-	}
-	return ac, func() []string {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]string(nil), seen...)
-	}
-}
-
-func readOutput(t *testing.T, ac *appCtx, scopes []lettsconfig.Scope, host string) (string, error) {
+func readOutput(t *testing.T, ac *appCtx, host string) (string, error) {
 	t.Helper()
 	cmd := newLogsCmd()
 	cmd.SetContext(t.Context())
 	var out strings.Builder
 	cmd.SetOut(&out)
-	err := runCtlMissionsOutput(cmd, ac, FormatText, scopes, "mid", host, "stdout", false, nil)
+	err := runCtlMissionsOutput(cmd, ac, FormatText, "mid", host, "stdout", false, nil)
 	return out.String(), err
-}
-
-func TestOutputRead_ForbiddenKindMovesToNextScope(t *testing.T) {
-	for _, host := range []string{"s1", ""} {
-		ac, seen := kindGateAppCtx(t, []string{"s1"}, map[string]bool{"etok": true, "atok": true}, "dtok", "atok", "etok")
-		got, err := readOutput(t, ac, readScopesMission, host)
-		if err != nil || got != "payload" {
-			t.Fatalf("host=%q: got %q err=%v", host, got, err)
-		}
-		if s := seen(); len(s) != 2 || s[0] != "dtok" || s[1] != "etok" {
-			t.Errorf("host=%q: tokens tried = %v, want [dtok etok]", host, s)
-		}
-	}
-}
-
-func TestOutputRead_ExecScopesTryExecFirst(t *testing.T) {
-	ac, seen := kindGateAppCtx(t, []string{"s1"}, map[string]bool{"etok": true}, "dtok", "atok", "etok")
-	if got, err := readOutput(t, ac, readScopesExec, "s1"); err != nil || got != "payload" {
-		t.Fatalf("got %q err=%v", got, err)
-	}
-	if s := seen(); len(s) != 1 || s[0] != "etok" {
-		t.Errorf("tokens tried = %v, want [etok]", s)
-	}
-}
-
-func TestOutputRead_ForbiddenKindSurfacesWhenNoOtherScope(t *testing.T) {
-	ac, _ := kindGateAppCtx(t, []string{"s1"}, map[string]bool{}, "dtok", "", "")
-	_, err := readOutput(t, ac, readScopesMission, "s1")
-	var he *lettsclient.HTTPError
-	if !errors.As(err, &he) || he.Code != "forbidden_kind" {
-		t.Fatalf("err=%v, want forbidden_kind", err)
-	}
 }
 
 func TestOutputRead_OtherErrorsDoNotRetry(t *testing.T) {
@@ -552,12 +480,12 @@ func TestOutputRead_OtherErrorsDoNotRetry(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	ac := &appCtx{
-		Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: "dtok", AdminToken: "atok", ExecToken: "etok"}}},
+		Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: "dtok", AdminToken: "atok"}}},
 		Getenv:       func(k string) (string, bool) { return "", false },
 		BaseURLForID: map[string]string{"s1": srv.URL},
 		clients:      map[clientKey]*hostClient{},
 	}
-	_, err := readOutput(t, ac, readScopesMission, "s1")
+	_, err := readOutput(t, ac, "s1")
 	var he *lettsclient.HTTPError
 	if !errors.As(err, &he) || he.Status != 401 || calls != 1 {
 		t.Fatalf("err=%v calls=%d, want one 401", err, calls)
@@ -565,69 +493,86 @@ func TestOutputRead_OtherErrorsDoNotRetry(t *testing.T) {
 }
 
 func TestOutputRead_NoTokensIsConfigError(t *testing.T) {
-	ac, _ := kindGateAppCtx(t, []string{"s1"}, map[string]bool{}, "", "", "")
-	_, err := readOutput(t, ac, readScopesMission, "s1")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "payload")
+	}))
+	t.Cleanup(srv.Close)
+	ac := &appCtx{
+		Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored"}}},
+		Getenv:       func(k string) (string, bool) { return "", false },
+		BaseURLForID: map[string]string{"s1": srv.URL},
+		clients:      map[clientKey]*hostClient{},
+	}
+	_, err := readOutput(t, ac, "s1")
 	var ce *ConfigError
 	if !errors.As(err, &ce) {
 		t.Fatalf("err=%v (%T), want ConfigError", err, err)
 	}
 }
 
-func TestCtlExecShowNamedMissionGivesHint(t *testing.T) {
+// TestReadsFallBackToAdminToken: reads use the dispatch token when one is
+// configured and the admin token otherwise.
+func tokenRecorder(t *testing.T) (*httptest.Server, *[]string) {
+	t.Helper()
+	got := &[]string{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if r.Header.Get("Authorization") == "Bearer etok" {
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = io.WriteString(w, `{"error":"forbidden_kind","message":"no"}`)
-			return
+		*got = append(*got, r.Header.Get("Authorization"))
+		switch {
+		case r.URL.Path == "/v1/lanes":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/output"):
+			_, _ = io.WriteString(w, "payload")
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"version":"x"}`)
 		}
-		_, _ = io.WriteString(w, `{"mission_id":"mid","kind":"mission","status":"done"}`)
 	}))
 	t.Cleanup(srv.Close)
-	ac := &appCtx{
-		Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: "dtok", AdminToken: "atok", ExecToken: "etok"}}},
+	return srv, got
+}
+
+func tokenTestCtx(srvURL, dispatchTok, adminTok string) *appCtx {
+	return &appCtx{
+		Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: dispatchTok, AdminToken: adminTok}}},
 		Getenv:       func(k string) (string, bool) { return "", false },
-		BaseURLForID: map[string]string{"s1": srv.URL},
+		BaseURLForID: map[string]string{"s1": srvURL},
 		clients:      map[clientKey]*hostClient{},
 	}
-	err := runCtlExecShow(ac, io.Discard, "mid", "s1", nil, FormatJSON)
-	var bu *BadUsageError
-	if !errors.As(err, &bu) || !strings.Contains(err.Error(), "ctl missions show") {
-		t.Fatalf("err=%v, want BadUsage hint", err)
+}
+
+func TestReadsPreferDispatchToken(t *testing.T) {
+	srv, got := tokenRecorder(t)
+	for _, toks := range []struct{ d, a, want string }{
+		{"dtok", "atok", "Bearer dtok"},
+		{"", "atok", "Bearer atok"},
+	} {
+		*got = nil
+		if _, err := readOutput(t, tokenTestCtx(srv.URL, toks.d, toks.a), "s1"); err != nil {
+			t.Fatal(err)
+		}
+		if len(*got) != 1 || (*got)[0] != toks.want {
+			t.Errorf("tokens=%v, want %s", *got, toks.want)
+		}
 	}
 }
 
 func TestInspectPrefersAdminToken(t *testing.T) {
-	var got []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = append(got, r.Header.Get("Authorization"))
-		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/v1/lanes" {
-			_, _ = io.WriteString(w, `[]`)
-			return
-		}
-		_, _ = io.WriteString(w, `{"version":"x"}`)
-	}))
-	t.Cleanup(srv.Close)
-	for _, toks := range []struct{ d, a, e, want string }{
-		{"dtok", "atok", "etok", "Bearer atok"},
-		{"", "", "etok", "Bearer etok"},
+	srv, got := tokenRecorder(t)
+	for _, toks := range []struct{ d, a, want string }{
+		{"dtok", "atok", "Bearer atok"},
+		{"dtok", "", "Bearer dtok"},
 	} {
-		got = nil
-		ac := &appCtx{
-			Config:       &lettsconfig.Config{Dugdales: []lettsconfig.Dugdale{{ID: "s1", Host: "ignored", Token: toks.d, AdminToken: toks.a, ExecToken: toks.e}}},
-			Getenv:       func(k string) (string, bool) { return "", false },
-			BaseURLForID: map[string]string{"s1": srv.URL},
-			clients:      map[clientKey]*hostClient{},
-		}
+		*got = nil
+		ac := tokenTestCtx(srv.URL, toks.d, toks.a)
 		if err := runCtlLanesList(ac, io.Discard, "s1", FormatJSON); err != nil {
 			t.Fatal(err)
 		}
 		if err := runCtlDugdalesInfo(ac, io.Discard, "s1", FormatJSON); err != nil {
 			t.Fatal(err)
 		}
-		if len(got) != 2 || got[0] != toks.want || got[1] != toks.want {
-			t.Errorf("tokens=%v, want %s for both", got, toks.want)
+		if len(*got) != 2 || (*got)[0] != toks.want || (*got)[1] != toks.want {
+			t.Errorf("tokens=%v, want %s for both", *got, toks.want)
 		}
 	}
 }

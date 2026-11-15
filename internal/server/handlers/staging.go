@@ -30,7 +30,7 @@ import (
 var sha256Regex = regexp.MustCompile(`^[a-f0-9]{64}$`)
 
 // StagingHandler serves the staging endpoints. PUT/HEAD/GET/DELETE on
-// individual staging_ids and the list / by-content lookup variants.
+// individual staging_ids and the list variant.
 type StagingHandler struct {
 	DB         *sql.DB
 	Cfg        *config.DugdaleConfig
@@ -58,7 +58,6 @@ func (h *StagingHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /v1/staging/{id}", h.Get)
 	mux.HandleFunc("DELETE /v1/staging/{id}", h.Delete)
 	mux.HandleFunc("GET /v1/staging", h.List)
-	mux.HandleFunc("GET /v1/staging/by-content/{sha}", h.ByContent)
 }
 
 // List implements GET /v1/staging?mission_id=...&ref_kind=...&limit=...&cursor=...
@@ -78,9 +77,6 @@ func (h *StagingHandler) List(w http.ResponseWriter, r *http.Request) {
 	kindFilter := q.Get("ref_kind")
 	switch kindFilter {
 	case "", "input", "output":
-		// ok (script not used in v1; future-compat)
-	case "script":
-		// future
 	default:
 		httputil.WriteError(w, http.StatusBadRequest, "bad_request",
 			"ref_kind must be input or output", nil)
@@ -138,48 +134,6 @@ func (h *StagingHandler) List(w http.ResponseWriter, r *http.Request) {
 		resp["next_cursor"] = nextCursor
 	}
 	httputil.WriteJSON(w, http.StatusOK, resp)
-}
-
-// ByContent implements GET /v1/staging/by-content/{sha}?size=<bytes>.
-// Looks up a complete staging row matching (sha256, size). The size param is
-// mandatory: it disambiguates collisions and lets the server reject
-// out-of-bounds requests early.
-func (h *StagingHandler) ByContent(w http.ResponseWriter, r *http.Request) {
-	sha := strings.ToLower(r.PathValue("sha"))
-	if !sha256Regex.MatchString(sha) {
-		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "sha must be 64 lowercase hex chars", nil)
-		return
-	}
-	sizeStr := r.URL.Query().Get("size")
-	if sizeStr == "" {
-		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "size is required", nil)
-		return
-	}
-	size, err := strconv.ParseInt(sizeStr, 10, 64)
-	if err != nil || size <= 0 {
-		httputil.WriteError(w, http.StatusBadRequest, "bad_request", "size must be a positive integer", nil)
-		return
-	}
-	if max := h.stagingMaxUpload(); max > 0 && size > max {
-		httputil.WriteError(w, http.StatusBadRequest, "bad_request",
-			"size exceeds max_staging_upload_size", map[string]any{"size": size, "max": max})
-		return
-	}
-
-	sf, err := storage.LookupStagingByContent(r.Context(), h.DB, sha, size)
-	if errors.Is(err, storage.ErrNotFound) {
-		httputil.WriteError(w, http.StatusNotFound, "not_found", "no complete staging file matches sha+size", nil)
-		return
-	}
-	if err != nil {
-		httputil.WriteDBError(w, http.StatusInternalServerError, "staging.ByContent/lookup", err)
-		return
-	}
-	httputil.WriteJSON(w, http.StatusOK, map[string]any{
-		"staging_id": sf.StagingID,
-		"sha256":     sf.Sha256,
-		"size":       sf.Size,
-	})
 }
 
 func encodeStagingCursor(c *storage.StagingCursor) string {

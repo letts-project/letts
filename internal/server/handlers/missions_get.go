@@ -49,9 +49,6 @@ func (h *MissionsHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteError(w, http.StatusNotFound, "not_found", "mission not found", nil)
 		return
 	}
-	if !RequireKindForScope(w, r, m) {
-		return
-	}
 	resp, err := buildMissionResponse(r.Context(), h.DB, m)
 	if err != nil {
 		httputil.WriteDBError(w, http.StatusInternalServerError, "missions.GetByID/build_response", err)
@@ -71,8 +68,6 @@ func (h *MissionsHandler) List(w http.ResponseWriter, r *http.Request) {
 		Lane:          q.Get("lane"),
 		Mission:       q.Get("mission"),
 		MissionPrefix: q.Get("mission_prefix"),
-		Kind:          q.Get("kind"),
-		GroupID:       q.Get("group_id"), // exec group filter
 		RestartedFrom: q.Get("restarted_from"),
 	}
 	switch order := q.Get("order"); order {
@@ -155,7 +150,6 @@ func (h *MissionsHandler) List(w http.ResponseWriter, r *http.Request) {
 func buildMissionResponse(ctx context.Context, db *sql.DB, m *storage.Mission) (map[string]any, error) {
 	resp := map[string]any{
 		"mission_id":        m.ID,
-		"kind":              string(m.Kind),
 		"lane":              m.Lane,
 		"mission_name":      m.MissionName,
 		"status":            string(m.Status),
@@ -166,12 +160,6 @@ func buildMissionResponse(ctx context.Context, db *sql.DB, m *storage.Mission) (
 	}
 	if len(m.Input) > 0 {
 		resp["input"] = json.RawMessage(m.Input)
-	}
-	if m.DisplayName.Valid {
-		resp["display_name"] = m.DisplayName.String
-	}
-	if m.GroupID.Valid {
-		resp["group_id"] = m.GroupID.String
 	}
 	if m.Outcome.Valid {
 		resp["outcome"] = m.Outcome.String

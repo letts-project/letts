@@ -490,7 +490,3 @@ func TestListStagingEmptyResponse(t *testing.T) {
 		t.Errorf("next_cursor=%q", out.NextCursor)
 	}
 }
-
-// --- StagingByContent ----------------------------------------------------
-// Tests for StagingByContent live in staging_bycontent_test.go (sentinel
-// triple contract: (id, true, nil) / ("", false, nil) / ("", false, err)).

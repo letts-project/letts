@@ -8,27 +8,9 @@ import (
 
 	"letts/internal/lane"
 	"letts/internal/server/httputil"
-	"letts/internal/server/middleware"
 	"letts/internal/storage"
 	"letts/internal/version"
 )
-
-// kindFilterForCtx returns the kind value to filter mission counts by for
-// the caller's auth scope, for kind isolation. An empty string
-// means "no filter" (admin sees all kinds).
-func kindFilterForCtx(r *http.Request) string {
-	id, ok := middleware.FromCtx(r.Context())
-	if !ok {
-		return ""
-	}
-	switch id.Scope {
-	case middleware.ScopeDispatch:
-		return string(storage.KindMission)
-	case middleware.ScopeExec:
-		return string(storage.KindExec)
-	}
-	return ""
-}
 
 // Inspect holds dependencies for read-only inspection endpoints.
 type Inspect struct {
@@ -72,18 +54,9 @@ func (h *Inspect) Dugdale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// queue summary — filter by kind for non-admin scopes.
 	summary := queueSummary{}
-	kindFilter := kindFilterForCtx(r)
-	var rows *sql.Rows
-	if kindFilter != "" {
-		rows, err = h.DB.QueryContext(ctx,
-			`SELECT status, COUNT(*) FROM missions WHERE status IN ('queued','running') AND kind=? GROUP BY status`,
-			kindFilter)
-	} else {
-		rows, err = h.DB.QueryContext(ctx,
-			`SELECT status, COUNT(*) FROM missions WHERE status IN ('queued','running') GROUP BY status`)
-	}
+	rows, err := h.DB.QueryContext(ctx,
+		`SELECT status, COUNT(*) FROM missions WHERE status IN ('queued','running') GROUP BY status`)
 	if err != nil {
 		httputil.WriteDBError(w, http.StatusInternalServerError, "inspect.Status/queue_summary", err)
 		return
@@ -135,20 +108,9 @@ func (h *Inspect) Lanes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Filter by kind per caller scope.
-	kindFilter := kindFilterForCtx(r)
-	var rows *sql.Rows
-	var err error
-	if kindFilter != "" {
-		rows, err = h.DB.QueryContext(ctx,
-			`SELECT lane, status, COUNT(*) FROM missions
-			 WHERE status IN ('queued','running') AND kind=? GROUP BY lane, status`,
-			kindFilter)
-	} else {
-		rows, err = h.DB.QueryContext(ctx,
-			`SELECT lane, status, COUNT(*) FROM missions
-			 WHERE status IN ('queued','running') GROUP BY lane, status`)
-	}
+	rows, err := h.DB.QueryContext(ctx,
+		`SELECT lane, status, COUNT(*) FROM missions
+		 WHERE status IN ('queued','running') GROUP BY lane, status`)
 	if err != nil {
 		httputil.WriteDBError(w, http.StatusInternalServerError, "inspect.Lanes/per_lane_counts", err)
 		return

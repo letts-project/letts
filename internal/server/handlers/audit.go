@@ -8,7 +8,7 @@ import (
 )
 
 // auditLog emits a single structured audit-tagged log line for an admin
-// or exec lifecycle action. All lifecycle
+// lifecycle action. All lifecycle
 // endpoints (pause / continue / kill / restart / delete / apply) MUST
 // produce one of these so operators grepping for audit:true see every
 // privileged mutation.
@@ -36,8 +36,6 @@ func auditLog(logger *slog.Logger, r *http.Request, action string, extras ...any
 		switch id.Scope {
 		case middleware.ScopeAdmin:
 			actor = "admin-token"
-		case middleware.ScopeExec:
-			actor = "exec-token"
 		case middleware.ScopeDispatch:
 			actor = "dispatch-token"
 		}

@@ -124,7 +124,7 @@ func TestDiskScanRemovesOrphanOutputFiles(t *testing.T) {
 
 func TestDiskScanKeepsKnownOutputFiles(t *testing.T) {
 	s, db, dataDir, clock := setupDiskScanner(t)
-	id := insertCleanupMission(t, db, storage.KindMission, storage.StatusDone, "success", time.Now().UnixMilli())
+	id := insertCleanupMission(t, db, storage.StatusDone, "success", time.Now().UnixMilli())
 	shard, _ := ids.ShardPath(id)
 	path := filepath.Join(dataDir, "output", shard, id+"-stdout")
 	writeFileOld(t, path, clock.Now().Add(-10*time.Minute))
@@ -160,7 +160,7 @@ func TestDiskScanRemovesOrphanWorkdir(t *testing.T) {
 
 func TestDiskScanKeepsKnownWorkdir(t *testing.T) {
 	s, db, dataDir, clock := setupDiskScanner(t)
-	id := insertCleanupMission(t, db, storage.KindMission, storage.StatusRunning, "", 0)
+	id := insertCleanupMission(t, db, storage.StatusRunning, "", 0)
 	dir := filepath.Join(dataDir, "work", id)
 	_ = os.MkdirAll(dir, 0o755)
 	old := clock.Now().Add(-10 * time.Minute)

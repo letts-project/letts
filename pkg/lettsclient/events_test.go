@@ -160,7 +160,7 @@ func TestStreamEventsFollowStopsOnClientError(t *testing.T) {
 			hits.Add(1)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
-			_, _ = io.WriteString(w, `{"error":"forbidden_kind","message":"no"}`)
+			_, _ = io.WriteString(w, `{"error":"forbidden","message":"no"}`)
 		}))
 		c, _ := New(Options{BaseURL: srv.URL, Token: "t"})
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -34,9 +34,6 @@ func mergeDugdaleWithTemplate(d *Dugdale, t *Template) {
 	if d.AdminToken == "" {
 		d.AdminToken = t.AdminToken
 	}
-	if d.ExecToken == "" {
-		d.ExecToken = t.ExecToken
-	}
 	// `proxy: null` on the dugdale deletes the inherited proxy (connect
 	// directly); otherwise dugdale-wins, falling back to the template.
 	if d.proxyNullified {

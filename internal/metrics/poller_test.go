@@ -118,7 +118,7 @@ func insertMissionPoller(t *testing.T, db *sql.DB, lane string, status storage.S
 	t.Helper()
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
-		ID: id, Kind: storage.KindMission, Lane: lane,
+		ID: id, Lane: lane,
 		MissionName: "PollerFixture", Status: status,
 		Input: []byte(`{}`), InputFingerprint: "fp",
 		TimeCreatedMs: time.Now().UnixMilli(),

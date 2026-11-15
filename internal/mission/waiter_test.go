@@ -98,7 +98,6 @@ func runFixture(t *testing.T, db *sql.DB, scriptPath string, lane string, timeou
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
 		ID:               id,
-		Kind:             storage.KindMission,
 		Lane:             lane,
 		MissionName:      filepath.Base(scriptPath),
 		Status:           storage.StatusQueued,
@@ -605,7 +604,6 @@ exit 0`)
 	id := ids.NewUUIDv7()
 	m := storage.Mission{
 		ID:               id,
-		Kind:             storage.KindMission,
 		Lane:             "normal",
 		MissionName:      filepath.Base(script),
 		Status:           storage.StatusQueued,

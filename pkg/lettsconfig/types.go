@@ -13,11 +13,10 @@ type Config struct {
 	Dugdales  []Dugdale           `yaml:"dugdales"`
 }
 
-// Auth holds the three global token fallbacks.
+// Auth holds the global token fallbacks.
 type Auth struct {
 	Token      string `yaml:"token,omitempty"`       // dispatch
 	AdminToken string `yaml:"admin_token,omitempty"` // admin
-	ExecToken  string `yaml:"exec_token,omitempty"`  // exec
 }
 
 // Defaults carries optional cluster-wide defaults.
@@ -43,7 +42,6 @@ type Template struct {
 	Labels     []string           `yaml:"labels,omitempty"`
 	Token      string             `yaml:"token,omitempty"`
 	AdminToken string             `yaml:"admin_token,omitempty"`
-	ExecToken  string             `yaml:"exec_token,omitempty"`
 	Proxy      string             `yaml:"proxy,omitempty"`
 	Lanes      map[string]LaneCfg `yaml:"lanes,omitempty"`
 }
@@ -83,7 +81,6 @@ type Dugdale struct {
 	Labels         []string           `yaml:"labels,omitempty"`
 	Token          string             `yaml:"token,omitempty"`
 	AdminToken     string             `yaml:"admin_token,omitempty"`
-	ExecToken      string             `yaml:"exec_token,omitempty"`
 	Lanes          map[string]LaneCfg `yaml:"lanes,omitempty"`
 	nullifiedLanes []string           `yaml:"-"`
 	// runtimeValidateMissionFileSet records whether the YAML carried a

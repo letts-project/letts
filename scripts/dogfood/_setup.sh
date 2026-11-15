@@ -75,11 +75,6 @@ export LETTS_CONFIG="$RUNTIME_DIR/letts.yaml"
 "$LETTS_BIN" apply -f "$LETTS_CONFIG" >/dev/null
 ok "applied; ready"
 
-# Persist exported var so subsequent scripts get it via run-all.sh.
-# Also export tokens/port — exec scenarios (09-14) hit raw curl and need to
-# distinguish scopes for the kind-isolation guard (scenario 12).
+# Persist exported vars so subsequent scripts get them via run-all.sh.
 echo "export LETTS_CONFIG='$LETTS_CONFIG'" > "$RUNTIME_DIR/env.sh"
 echo "export PORT='$PORT'" >> "$RUNTIME_DIR/env.sh"
-echo "export DISP_TOKEN='dogfood-dispatch'" >> "$RUNTIME_DIR/env.sh"
-echo "export ADMIN_TOKEN='dogfood-admin'" >> "$RUNTIME_DIR/env.sh"
-echo "export EXEC_TOKEN='dogfood-exec'" >> "$RUNTIME_DIR/env.sh"

@@ -44,15 +44,6 @@ func (h *LifecycleHandler) Kill(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteDBError(w, http.StatusInternalServerError, "missions.Kill/get_mission", err)
 		return
 	}
-	// Defensive kind-vs-scope gate. Currently all kill
-	// routes are admin-only, but the gate matches the pattern in
-	// deleteOne/restartOne so future per-scope wiring of bulk-kill
-	// doesn't leak across kinds.
-	if gate := gateKindForMission(r.Context(), m); gate.Status != 0 {
-		httputil.WriteError(w, gate.Status, gate.ErrorCode, gate.ErrorMsg, gate.Details)
-		return
-	}
-
 	switch m.Status {
 	case storage.StatusDone:
 		httputil.WriteError(w, http.StatusConflict, "mission_done", "already done", nil)
@@ -77,7 +68,7 @@ func (h *LifecycleHandler) Kill(w http.ResponseWriter, r *http.Request) {
 			httputil.WriteDBError(w, http.StatusInternalServerError, "missions.kill_queued", err)
 			return
 		}
-		auditLog(nil, r, "mission.kill", "mission_id", id, "kind", string(m.Kind), "from_status", "queued")
+		auditLog(nil, r, "mission.kill", "mission_id", id, "from_status", "queued")
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "killed"})
 		return
 	case storage.StatusRunning:
@@ -109,7 +100,7 @@ func (h *LifecycleHandler) Kill(w http.ResponseWriter, r *http.Request) {
 		// same way the queued path does — otherwise a grep for
 		// audit=true action=mission.kill would silently miss every
 		// running-mission kill.
-		auditLog(nil, r, "mission.kill", "mission_id", id, "kind", string(m.Kind), "from_status", "running")
+		auditLog(nil, r, "mission.kill", "mission_id", id, "from_status", "running")
 		httputil.WriteJSON(w, http.StatusOK, map[string]string{"status": "kill_sent"})
 		return
 	default:

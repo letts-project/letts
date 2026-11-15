@@ -134,3 +134,24 @@ func TestMissionFingerprintDistinctForInt64BeyondFloat64Precision(t *testing.T) 
 		t.Fatalf("distinct large integers collapsed to same fingerprint: %s", ha)
 	}
 }
+
+func TestMissionFingerprintIsStable(t *testing.T) {
+	timeout := int64(30000)
+	got, err := Mission(MissionInput{
+		Lane:           "normal",
+		Mission:        "Report",
+		InputCanonical: []byte(`{"a":1}`),
+		TimeoutMs:      &timeout,
+		Files: []FileRef{
+			{Role: "b", StagingID: "01900000-0000-7000-8000-000000000002", Sha256: "bb", Size: 2},
+			{Role: "a", StagingID: "01900000-0000-7000-8000-000000000001", Sha256: "aa", Size: 1},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "d7b12b5c44590796248b8d861a280fcf509988d852465523b0c4436341c83298"
+	if got != want {
+		t.Fatalf("fingerprint = %s, want %s: the format of stored fingerprints changed", got, want)
+	}
+}

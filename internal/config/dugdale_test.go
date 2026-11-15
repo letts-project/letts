@@ -37,10 +37,6 @@ func TestLoadDugdaleFull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The minimal sample has no exec section; full sample has enabled=false.
-	if c.Exec.Enabled {
-		t.Errorf("full sample exec.enabled = true, want false")
-	}
 	if c.Limits.MaxEventLineSize != 1024*1024 {
 		t.Errorf("limits.max_event_line_size = %d, want 1MiB", c.Limits.MaxEventLineSize)
 	}
@@ -94,47 +90,46 @@ mission_env:
 	}
 }
 
-// TestLoadDugdaleRejectExecEnabledWithoutAccess enforces: when
-// exec is opt-in (enabled=true) but the operator left exec.tokens empty
-// AND there is no other route to call it (no admin.tokens), the
-// endpoint is mounted but every request 401s. The
-// only useful effect of `enabled=true` is to reserve memory for the
-// handler — a clear misconfiguration. Refuse to start so operator gets
-// loud feedback instead of debugging "why does my exec always 401?".
-func TestLoadDugdaleRejectExecEnabledWithoutAccess(t *testing.T) {
+func TestLoadDugdaleAcceptsDisabledExecSection(t *testing.T) {
 	yamlSrc := `
 listen: 127.0.0.1:7180
 data_dir: /tmp/x
 exec:
-  enabled: true
-  tokens: []
+  enabled: false
+  tokens: [e]
+  allow_shell: false
+  max_script_size: 256KiB
 `
-	_, err := LoadDugdaleBytes([]byte(yamlSrc))
-	if err == nil {
-		t.Fatal("expected error for exec.enabled=true with no usable auth path")
-	}
-	if !strings.Contains(err.Error(), "exec") {
-		t.Errorf("error %q should mention exec", err.Error())
+	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err != nil {
+		t.Fatalf("disabled exec section should load: %v", err)
 	}
 }
 
-// TestLoadDugdaleAcceptsExecEnabledWithAdminTokens verifies the opt-out:
-// admin tokens give admin scope the right to call /v1/exec/dispatch
-// (superset), so a config with exec.enabled=true, exec.tokens=[], and
-// admin.tokens=[...] is intentional ("only admins may exec") and must
-// load without error.
-func TestLoadDugdaleAcceptsExecEnabledWithAdminTokens(t *testing.T) {
+func TestLoadDugdaleRejectsEnabledExecSection(t *testing.T) {
 	yamlSrc := `
 listen: 127.0.0.1:7180
 data_dir: /tmp/x
-admin:
-  tokens: [admin-tok]
 exec:
   enabled: true
-  tokens: []
 `
-	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err != nil {
-		t.Errorf("unexpected error: %v", err)
+	_, err := LoadDugdaleBytes([]byte(yamlSrc))
+	if err == nil {
+		t.Fatal("expected error for exec.enabled=true")
+	}
+	if !strings.Contains(err.Error(), "exec") {
+		t.Errorf("error %q should name the exec section", err.Error())
+	}
+}
+
+func TestLoadDugdaleRejectsMalformedExecSection(t *testing.T) {
+	yamlSrc := `
+listen: 127.0.0.1:7180
+data_dir: /tmp/x
+exec:
+  enabled: maybe
+`
+	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err == nil {
+		t.Fatal("expected error for a non-boolean exec.enabled")
 	}
 }
 
@@ -202,48 +197,9 @@ cleanup:
 	}
 }
 
-// TestExecConfigDefaults verifies that ExecConfig fields get their default values
-// when the config sets enabled:true but omits the size/duration knobs.
-func TestExecConfigDefaults(t *testing.T) {
-	yamlSrc := `
-listen: 127.0.0.1:7180
-data_dir: /tmp/x
-auth:
-  tokens: [t]
-exec:
-  enabled: true
-  tokens: [e]
-`
-	c, err := LoadDugdaleBytes([]byte(yamlSrc))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	if !c.Exec.Enabled {
-		t.Errorf("Exec.Enabled = false, want true")
-	}
-	if c.Exec.AllowShell {
-		t.Errorf("Exec.AllowShell default = true, want false")
-	}
-	if c.Exec.MaxScriptSize != 256*1024 {
-		t.Errorf("Exec.MaxScriptSize = %d, want 262144 (256KiB)", c.Exec.MaxScriptSize)
-	}
-	if c.Exec.MaxInputsPerExec != 32 {
-		t.Errorf("Exec.MaxInputsPerExec = %d, want 32", c.Exec.MaxInputsPerExec)
-	}
-	if c.Exec.MaxOutputsPerExec != 32 {
-		t.Errorf("Exec.MaxOutputsPerExec = %d, want 32", c.Exec.MaxOutputsPerExec)
-	}
-	if c.Exec.ExecSuccessTTL != time.Hour {
-		t.Errorf("Exec.ExecSuccessTTL = %v, want 1h", c.Exec.ExecSuccessTTL)
-	}
-	if c.Exec.ExecFailedTTL != 24*time.Hour {
-		t.Errorf("Exec.ExecFailedTTL = %v, want 24h", c.Exec.ExecFailedTTL)
-	}
-}
-
 // TestExplicitZeroIntCapsPreserved: applyDefaults used to
-// clobber explicit YAML `0` with the default for max_progress_rate,
-// max_output_files_per_mission, max_inputs_per_exec, max_outputs_per_exec.
+// clobber explicit YAML `0` with the default for max_progress_rate and
+// max_output_files_per_mission.
 // Every consumer of these gates on `> 0`, so 0 is the spelling of "no
 // cap" — silently rewriting it changes behaviour.
 func TestExplicitZeroIntCapsPreserved(t *testing.T) {
@@ -255,11 +211,6 @@ auth:
 limits:
   max_progress_rate: 0
   max_output_files_per_mission: 0
-exec:
-  enabled: true
-  tokens: [e]
-  max_inputs_per_exec: 0
-  max_outputs_per_exec: 0
 `
 	c, err := LoadDugdaleBytes([]byte(yamlSrc))
 	if err != nil {
@@ -270,12 +221,6 @@ exec:
 	}
 	if c.Limits.MaxOutputFilesPerMsn != 0 {
 		t.Errorf("MaxOutputFilesPerMsn=%d want 0", c.Limits.MaxOutputFilesPerMsn)
-	}
-	if c.Exec.MaxInputsPerExec != 0 {
-		t.Errorf("Exec.MaxInputsPerExec=%d want 0", c.Exec.MaxInputsPerExec)
-	}
-	if c.Exec.MaxOutputsPerExec != 0 {
-		t.Errorf("Exec.MaxOutputsPerExec=%d want 0", c.Exec.MaxOutputsPerExec)
 	}
 }
 
@@ -289,9 +234,6 @@ listen: 127.0.0.1:7180
 data_dir: /tmp/x
 auth:
   tokens: [t]
-exec:
-  enabled: true
-  tokens: [e]
 `
 	c, err := LoadDugdaleBytes([]byte(yamlSrc))
 	if err != nil {
@@ -302,52 +244,6 @@ exec:
 	}
 	if c.Limits.MaxOutputFilesPerMsn != 32 {
 		t.Errorf("MaxOutputFilesPerMsn=%d want 32 (default)", c.Limits.MaxOutputFilesPerMsn)
-	}
-	if c.Exec.MaxInputsPerExec != 32 {
-		t.Errorf("Exec.MaxInputsPerExec=%d want 32 (default)", c.Exec.MaxInputsPerExec)
-	}
-	if c.Exec.MaxOutputsPerExec != 32 {
-		t.Errorf("Exec.MaxOutputsPerExec=%d want 32 (default)", c.Exec.MaxOutputsPerExec)
-	}
-}
-
-// TestTLSGuardRejectsExecTokensOnNonLoopback verifies: dugdale must
-// refuse to start when exec.enabled=true, exec.tokens is non-empty, listen
-// is non-loopback, no behind_tls_proxy assertion, and no insecure_plain_http
-// escape.
-func TestTLSGuardRejectsExecTokensOnNonLoopback(t *testing.T) {
-	yamlSrc := `
-listen: 0.0.0.0:7180
-data_dir: /tmp/x
-exec:
-  enabled: true
-  tokens: [e]
-network:
-  behind_tls_proxy: false
-`
-	_, err := LoadDugdaleBytes([]byte(yamlSrc))
-	if err == nil {
-		t.Fatal("expected error: exec tokens on non-loopback without TLS proxy must refuse")
-	}
-	if !strings.Contains(err.Error(), "exec") {
-		t.Errorf("error should mention exec: %q", err.Error())
-	}
-}
-
-// TestTLSGuardAcceptsExecTokensWithProxy verifies the guard passes when the
-// operator asserts behind_tls_proxy=true.
-func TestTLSGuardAcceptsExecTokensWithProxy(t *testing.T) {
-	yamlSrc := `
-listen: 0.0.0.0:7180
-data_dir: /tmp/x
-exec:
-  enabled: true
-  tokens: [e]
-network:
-  behind_tls_proxy: true
-`
-	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err != nil {
-		t.Fatalf("behind_tls_proxy=true should allow exec tokens on non-loopback; got %v", err)
 	}
 }
 
@@ -361,9 +257,6 @@ auth:
   tokens: [t]
 admin:
   tokens: [a]
-exec:
-  enabled: true
-  tokens: [e]
 `
 	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err != nil {
 		t.Fatalf("loopback listen should always pass guard; got %v", err)
@@ -376,9 +269,8 @@ func TestTLSGuardAcceptsInsecurePlainHTTP(t *testing.T) {
 	yamlSrc := `
 listen: 0.0.0.0:7180
 data_dir: /tmp/x
-exec:
-  enabled: true
-  tokens: [e]
+admin:
+  tokens: [a]
 network:
   insecure_plain_http: true
 `
@@ -399,23 +291,5 @@ auth:
 	_, err := LoadDugdaleBytes([]byte(yamlSrc))
 	if err == nil {
 		t.Fatal("expected error: auth tokens on non-loopback without TLS proxy must refuse")
-	}
-}
-
-// TestExecDisabledIgnoresTokensInGuard verifies that exec.enabled=false short-
-// circuits the exec branch of the guard even if exec.tokens is non-empty
-// (operator leaving stale list around with feature off).
-func TestExecDisabledIgnoresTokensInGuard(t *testing.T) {
-	yamlSrc := `
-listen: 0.0.0.0:7180
-data_dir: /tmp/x
-exec:
-  enabled: false
-  tokens: [e]
-network:
-  behind_tls_proxy: true
-`
-	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err != nil {
-		t.Fatalf("exec.enabled=false should not trip guard on its own; got %v", err)
 	}
 }
