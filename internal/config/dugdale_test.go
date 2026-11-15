@@ -90,46 +90,15 @@ mission_env:
 	}
 }
 
-func TestLoadDugdaleAcceptsDisabledExecSection(t *testing.T) {
-	yamlSrc := `
-listen: 127.0.0.1:7180
-data_dir: /tmp/x
-exec:
-  enabled: false
-  tokens: [e]
-  allow_shell: false
-  max_script_size: 256KiB
-`
-	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err != nil {
-		t.Fatalf("disabled exec section should load: %v", err)
-	}
-}
-
-func TestLoadDugdaleRejectsEnabledExecSection(t *testing.T) {
-	yamlSrc := `
-listen: 127.0.0.1:7180
-data_dir: /tmp/x
-exec:
-  enabled: true
-`
-	_, err := LoadDugdaleBytes([]byte(yamlSrc))
-	if err == nil {
-		t.Fatal("expected error for exec.enabled=true")
-	}
-	if !strings.Contains(err.Error(), "exec") {
-		t.Errorf("error %q should name the exec section", err.Error())
-	}
-}
-
-func TestLoadDugdaleRejectsMalformedExecSection(t *testing.T) {
-	yamlSrc := `
-listen: 127.0.0.1:7180
-data_dir: /tmp/x
-exec:
-  enabled: maybe
-`
-	if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err == nil {
-		t.Fatal("expected error for a non-boolean exec.enabled")
+func TestLoadDugdaleRejectsUnknownKeys(t *testing.T) {
+	for name, extra := range map[string]string{
+		"top level": "bogus: 1\n",
+		"nested":    "limits:\n  max_output_bufer: 1MiB\n",
+	} {
+		yamlSrc := "listen: 127.0.0.1:7180\ndata_dir: /tmp/x\n" + extra
+		if _, err := LoadDugdaleBytes([]byte(yamlSrc)); err == nil {
+			t.Errorf("%s: expected an error for an unknown key", name)
+		}
 	}
 }
 

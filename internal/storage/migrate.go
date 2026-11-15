@@ -53,6 +53,9 @@ func Migrate(ctx context.Context, db *sql.DB) error {
 	if err := conn.QueryRowContext(ctx, "PRAGMA user_version").Scan(&current); err != nil {
 		return fmt.Errorf("read user_version: %w", err)
 	}
+	if len(migs) > 0 && current > migs[len(migs)-1].ver {
+		return fmt.Errorf("database schema version %d is newer than this build supports (%d)", current, migs[len(migs)-1].ver)
+	}
 
 	for _, m := range migs {
 		if m.ver <= current {

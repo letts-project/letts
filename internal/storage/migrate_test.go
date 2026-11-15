@@ -111,7 +111,7 @@ func TestMigrateIdempotent(t *testing.T) {
 	}
 }
 
-func TestMigrate003DropsExecRowsAndColumns(t *testing.T) {
+func TestMigrate003DropsMissionKind(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(filepath.Join(t.TempDir(), "state.db"), Options{})
 	if err != nil {
@@ -130,19 +130,19 @@ func TestMigrate003DropsExecRowsAndColumns(t *testing.T) {
 	}
 	const (
 		missionID = "01900000-0000-7000-8000-000000000001"
-		execID    = "01900000-0000-7000-8000-000000000002"
+		otherID   = "01900000-0000-7000-8000-000000000002"
 		sharedSt  = "01900000-0000-7000-8000-0000000000a1"
-		execSt    = "01900000-0000-7000-8000-0000000000a2"
+		otherSt   = "01900000-0000-7000-8000-0000000000a2"
 	)
 	stmts := []string{
 		`INSERT INTO missions (mission_id, kind, lane, mission_name, status, input, input_fingerprint, time_created)
 		 VALUES ('` + missionID + `', 'mission', 'normal', 'Demo', 'done', '{}', 'fp1', 1000)`,
 		`INSERT INTO missions (mission_id, kind, lane, mission_name, display_name, group_id, status, input, input_fingerprint, time_created)
-		 VALUES ('` + execID + `', 'exec', 'normal', 'df', 'disk', 'g1', 'running', '{}', 'fp2', 2000)`,
+		 VALUES ('` + otherID + `', 'other', 'normal', 'df', 'disk', 'g1', 'running', '{}', 'fp2', 2000)`,
 		`INSERT INTO staging_files (staging_id, state, sha256, size, path, time_created, time_updated, time_expires)
-		 VALUES ('` + sharedSt + `', 'complete', 'aa', 1, 'p1', 1, 1, 99), ('` + execSt + `', 'complete', 'bb', 1, 'p2', 1, 1, 99)`,
+		 VALUES ('` + sharedSt + `', 'complete', 'aa', 1, 'p1', 1, 1, 99), ('` + otherSt + `', 'complete', 'bb', 1, 'p2', 1, 1, 99)`,
 		`INSERT INTO mission_staging_refs (mission_id, staging_id, ref_kind, role)
-		 VALUES ('` + missionID + `', '` + sharedSt + `', 'input', 'a'), ('` + execID + `', '` + execSt + `', 'script', '')`,
+		 VALUES ('` + missionID + `', '` + sharedSt + `', 'input', 'a'), ('` + otherID + `', '` + otherSt + `', 'input', 'b')`,
 	}
 	for _, s := range stmts {
 		if _, err := conn.ExecContext(ctx, s); err != nil {
@@ -155,8 +155,8 @@ func TestMigrate003DropsExecRowsAndColumns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := GetMission(ctx, db, execID); err != ErrNotFound {
-		t.Errorf("exec row: err=%v, want ErrNotFound", err)
+	if _, err := GetMission(ctx, db, otherID); err != ErrNotFound {
+		t.Errorf("non-mission row: err=%v, want ErrNotFound", err)
 	}
 	m, err := GetMission(ctx, db, missionID)
 	if err != nil {
@@ -186,11 +186,11 @@ func TestMigrate003DropsExecRowsAndColumns(t *testing.T) {
 	if refs != 1 {
 		t.Errorf("staging refs = %d, want 1", refs)
 	}
-	var execExp, sharedExp int64
-	_ = db.QueryRow(`SELECT time_expires FROM staging_files WHERE staging_id=?`, execSt).Scan(&execExp)
+	var otherExp, sharedExp int64
+	_ = db.QueryRow(`SELECT time_expires FROM staging_files WHERE staging_id=?`, otherSt).Scan(&otherExp)
 	_ = db.QueryRow(`SELECT time_expires FROM staging_files WHERE staging_id=?`, sharedSt).Scan(&sharedExp)
-	if execExp != 0 || sharedExp != 99 {
-		t.Errorf("time_expires exec=%d shared=%d, want 0 and 99", execExp, sharedExp)
+	if otherExp != 0 || sharedExp != 99 {
+		t.Errorf("time_expires other=%d shared=%d, want 0 and 99", otherExp, sharedExp)
 	}
 
 	for _, idx := range []string{"missions_by_group", "staging_by_sha"} {
@@ -203,5 +203,23 @@ func TestMigrate003DropsExecRowsAndColumns(t *testing.T) {
 	plan := explainQueryPlan(t, db, `SELECT mission_id FROM missions ORDER BY time_created DESC, mission_id DESC LIMIT 10`)
 	if !strings.Contains(plan, "missions_recent") {
 		t.Errorf("recent listing is not index-backed; plan:\n%s", plan)
+	}
+}
+
+func TestMigrateRefusesNewerSchema(t *testing.T) {
+	db, err := Open(filepath.Join(t.TempDir(), "state.db"), Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	if err := Migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("PRAGMA user_version=999"); err != nil {
+		t.Fatal(err)
+	}
+	err = Migrate(context.Background(), db)
+	if err == nil || !strings.Contains(err.Error(), "newer than this build supports") {
+		t.Fatalf("Migrate on a newer schema: err=%v", err)
 	}
 }

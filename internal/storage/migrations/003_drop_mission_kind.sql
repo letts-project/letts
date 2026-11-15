@@ -1,4 +1,4 @@
-DELETE FROM missions WHERE kind = 'exec';
+DELETE FROM missions WHERE kind <> 'mission';
 
 -- SQLite refuses to drop a column that an index still references.
 DROP INDEX missions_recent;

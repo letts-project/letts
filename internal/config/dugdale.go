@@ -33,10 +33,6 @@ type DugdaleConfig struct {
 	Limits     LimitsConfig     `yaml:"limits"`
 	MissionEnv MissionEnvConfig `yaml:"mission_env"`
 
-	// RemovedExec accepts the `exec:` section that configs written for
-	// earlier releases still carry; it is rejected if it enables anything.
-	RemovedExec yaml.Node `yaml:"exec"`
-
 	DiskUsage func() int64 `yaml:"-"`
 }
 
@@ -191,30 +187,11 @@ func validateDugdale(c *DugdaleConfig) error {
 	if err := validateMissionEnv(&c.MissionEnv); err != nil {
 		return err
 	}
-	if err := validateRemovedExec(c); err != nil {
-		return err
-	}
 	if err := validateLogConfig(c); err != nil {
 		return err
 	}
 	if err := validateEventLineHeadroom(c); err != nil {
 		return err
-	}
-	return nil
-}
-
-func validateRemovedExec(c *DugdaleConfig) error {
-	if c.RemovedExec.Kind == 0 {
-		return nil
-	}
-	var legacy struct {
-		Enabled bool `yaml:"enabled"`
-	}
-	if err := c.RemovedExec.Decode(&legacy); err != nil {
-		return fmt.Errorf("parse dugdale config: exec: %w", err)
-	}
-	if legacy.Enabled {
-		return errors.New("refuse to start: exec.enabled=true, but dugdale no longer supports exec; remove the exec section")
 	}
 	return nil
 }

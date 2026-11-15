@@ -439,9 +439,6 @@ No inherited name and no `set` key may begin with `LETTS_`, which is reserved fo
 variables the daemon injects (`LETTS_MISSION_ID`, `LETTS_LANE`, `LETTS_WORKDIR`,
 `LETTS_TMPDIR`, `LETTS_IN_<role>`, and so on).
 
-For compatibility with older configuration files, a leftover `exec:` section is accepted
-and ignored unless it sets `enabled: true`, in which case the daemon refuses to start.
-
 #### File permissions, discovery, and flags
 
 - **Secret-file permissions.** If the configuration contains any secret — `auth.tokens`,
